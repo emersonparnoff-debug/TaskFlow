@@ -149,11 +149,14 @@ function getFilteredTasks() {
         if (!showCompleted && t.status === 'done') return false;
         if (priorityVal !== 'all' && t.priority !== priorityVal) return false;
 
-        if (memberVal !== 'all') {
-            const matchTaskOwner = (t.author || '').toLowerCase().trim() === memberVal;
-            const matchSubOwner = (t.subtasks || []).some(s => (s.assignee || '').toLowerCase().trim() === memberVal);
-            const matchInnerOwner = (t.subtasks || []).some(s => (s.innerTasks || []).some(it => (it.assignee || '').toLowerCase().trim() === memberVal));
-            if (!matchTaskOwner && !matchSubOwner && !matchInnerOwner) return false;
+        if (memberVal === '__unassigned__') {
+            if (!isTaskOrSubtaskUnassigned(t)) return false;
+        } else if (memberVal !== 'all') {
+            const matchTaskOwner = doesAssigneeMatchUser(t.author, memberVal);
+            const matchSubOwner = (t.subtasks || []).some(s => doesAssigneeMatchUser(s.assignee, memberVal));
+            const matchInnerOwner = (t.subtasks || []).some(s => (s.innerTasks || []).some(it => doesAssigneeMatchUser(it.assignee, memberVal)));
+            const isUnassigned = isTaskOrSubtaskUnassigned(t);
+            if (!matchTaskOwner && !matchSubOwner && !matchInnerOwner && !isUnassigned) return false;
         }
 
         if (searchVal) {
@@ -315,7 +318,8 @@ function evaluateTaskSubtasksDeadlineInfo(taskOrObj) {
                     hasMore = true;
                     const { s, i } = q.items[q.ptr++];
                     const h = Math.max(0.1, Number(s.hours) || 2);
-                    const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings);
+                    const subMember = (s.assignee || t.author || '').trim() || null;
+                    const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings, subMember);
                     cursorMs = alloc.nextCursorMs;
 
                     if (q.taskId === taskOrObj.id) {
@@ -344,7 +348,8 @@ function evaluateTaskSubtasksDeadlineInfo(taskOrObj) {
     // Cálculo sequencial padrão das subtarefas da tarefa
     subs.forEach((s, idx) => {
         const h = Math.max(0.1, Number(s.hours) || 2);
-        const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings);
+        const subMember = (s.assignee || taskOrObj.author || '').trim() || null;
+        const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings, subMember);
         cursorMs = alloc.nextCursorMs;
 
         const exceeds = Boolean(dueEndMs && alloc.endMs > dueEndMs && !s.completed);
@@ -2389,8 +2394,38 @@ function normalizeIdentityStr(val) {
     return String(val || '').trim().toLowerCase();
 }
 
-function doesAssigneeMatchUser(assigneeValue, userObjOrName, fallbackLogin = '') {
-    const target = normalizeIdentityStr(assigneeValue).replace(/^@/, '');
+/**
+ * Converte uma string ou array de responsáveis (ex: "Ana Silva, Carlos Mendes")
+ * em uma lista limpa de nomes individuais sem duplicatas.
+ */
+function parseAssigneesList(rawVal) {
+    if (!rawVal) return [];
+    if (Array.isArray(rawVal)) {
+        return rawVal.map(x => String(x || '').trim()).filter(Boolean);
+    }
+    const str = String(rawVal).trim();
+    if (!str || str === '__MULTI_PICKER__') return [];
+    const seen = new Set();
+    const out = [];
+    str.split(/[,;]+/).forEach(part => {
+        const clean = part.trim();
+        if (clean) {
+            const k = normalizeIdentityStr(clean);
+            if (!seen.has(k)) {
+                seen.add(k);
+                out.push(clean);
+            }
+        }
+    });
+    return out;
+}
+
+function formatAssigneesListToString(listOrVal) {
+    return parseAssigneesList(listOrVal).join(', ');
+}
+
+function doesSingleAssigneeTokenMatchUser(singleToken, userObjOrName, fallbackLogin = '') {
+    const target = normalizeIdentityStr(singleToken).replace(/^@/, '');
     if (!target) return false;
 
     if (typeof userObjOrName === 'object' && userObjOrName !== null) {
@@ -2404,14 +2439,53 @@ function doesAssigneeMatchUser(assigneeValue, userObjOrName, fallbackLogin = '')
     return (cName && target === cName) || (cLogin && target === cLogin);
 }
 
+/**
+ * Suporta atribuição a múltiplos membros (separados por vírgula):
+ * Retorna true se qualquer um dos membros atribuídos corresponder a `userObjOrName`.
+ */
+function doesAssigneeMatchUser(assigneeValue, userObjOrName, fallbackLogin = '') {
+    const tokens = parseAssigneesList(assigneeValue);
+    if (tokens.length === 0) return false;
+    return tokens.some(tok => doesSingleAssigneeTokenMatchUser(tok, userObjOrName, fallbackLogin));
+}
+
+const UNASSIGNED_ROOM_CODE = 'sala_nao_atribuidas';
+
 function getMemberPersonalRoomCode(loginOrName) {
     const clean = normalizeIdentityStr(loginOrName).replace(/[^a-z0-9._-]/gi, '') || 'membro';
     return `sala_${clean}`;
 }
 
+function isAssigneeEmptyOrUnassigned(val) {
+    const clean = normalizeIdentityStr(val);
+    return !clean || clean === 'sem responsavel' || clean === 'sem responsável' || clean === 'sem resp.' || clean === 'sem resp' || clean === 'nao atribuida' || clean === 'não atribuída' || clean === 'sem membro';
+}
+
+/**
+ * Verifica se uma tarefa (ou alguma de suas subtarefas) está NÃO ATRIBUÍDA a ninguém:
+ * - Tarefa sem `author` (responsável principal vazio)
+ * - OU tarefa que possui subtarefa(s) pendente(s) sem `assignee` (e a tarefa também não tem responsável principal definido)
+ */
+function isTaskOrSubtaskUnassigned(task) {
+    if (!task || task.archived) return false;
+    const noTaskAuthor = isAssigneeEmptyOrUnassigned(task.author);
+    const subs = Array.isArray(task.subtasks) ? task.subtasks : [];
+    if (subs.length === 0) {
+        return noTaskAuthor;
+    }
+    const anySubUnassigned = subs.some(s => !s.completed && isAssigneeEmptyOrUnassigned(s.assignee));
+    const allSubsUnassigned = subs.every(s => isAssigneeEmptyOrUnassigned(s.assignee));
+    return noTaskAuthor || anySubUnassigned || allSubsUnassigned;
+}
+
+function isUnassignedRoomCode(roomCode = currentWorkspace) {
+    const code = normalizeIdentityStr(roomCode);
+    return code === UNASSIGNED_ROOM_CODE || code === 'nao_atribuidas' || code === 'sem_responsavel';
+}
+
 function getRoomOwnerDescriptor(roomCode = currentWorkspace) {
     const code = normalizeIdentityStr(roomCode);
-    if (!code || code === 'geral' || code === 'projetos') return null;
+    if (!code || code === 'geral' || code === 'projetos' || isUnassignedRoomCode(code)) return null;
 
     const roomsMap = getLocalRoomConfigs();
     const cfg = roomsMap[code];
@@ -2435,11 +2509,27 @@ function getRoomOwnerDescriptor(roomCode = currentWorkspace) {
     return null;
 }
 
+/**
+ * Define quais tarefas aparecem em cada sala:
+ * 1. Sala de Não Atribuídas (`sala_nao_atribuidas`): mostra exclusivamente tarefas/subtarefas não atribuídas a ninguém.
+ * 2. Sala Geral (`geral`): mostra todas as tarefas do sistema (incluindo as não atribuídas).
+ * 3. Sala Individual de Membro (`sala_<membro>`): mostra as tarefas/subtarefas atribuídas àquele membro
+ *    E TAMBÉM mostra as tarefas não atribuídas a ninguém (para que nunca fiquem ocultas e qualquer membro possa assumir!).
+ */
 function doesTaskAppearInRoom(task, roomCode = currentWorkspace) {
+    if (!task) return false;
+
+    // 1. Sala dedicada às Tarefas Não Atribuídas
+    if (isUnassignedRoomCode(roomCode)) {
+        return isTaskOrSubtaskUnassigned(task);
+    }
+
     const owner = getRoomOwnerDescriptor(roomCode);
     if (!owner) {
-        return true; // Sala Geral (Admin): exibe todas as tarefas
+        return true; // Sala Geral: exibe todas as tarefas
     }
+
+    // 2. Na sala de qualquer membro: exibe tarefas atribuídas ao membro
     if (doesAssigneeMatchUser(task.author, owner)) return true;
 
     if (Array.isArray(task.subtasks)) {
@@ -2452,6 +2542,14 @@ function doesTaskAppearInRoom(task, roomCode = currentWorkspace) {
             }
         }
     }
+
+    // 3. Mostrar tarefas completamente não atribuídas a ninguém em todas as salas para que fiquem visíveis a todos!
+    if (isAssigneeEmptyOrUnassigned(task.author)) {
+        const subs = Array.isArray(task.subtasks) ? task.subtasks : [];
+        const hasAssignedSub = subs.some(s => !isAssigneeEmptyOrUnassigned(s.assignee));
+        if (!hasAssignedSub) return true;
+    }
+
     return false;
 }
 
@@ -2464,6 +2562,14 @@ function syncMemberPersonalRooms() {
         isGeneralRoom: true,
         createdBy: 'Administrador',
         createdAt: map['geral']?.createdAt || Date.now()
+    };
+
+    map[UNASSIGNED_ROOM_CODE] = {
+        id: UNASSIGNED_ROOM_CODE,
+        roomName: 'SALA: TAREFAS NÃO ATRIBUÍDAS',
+        isUnassignedRoom: true,
+        createdBy: 'Sistema',
+        createdAt: map[UNASSIGNED_ROOM_CODE]?.createdAt || Date.now()
     };
 
     registeredUsersCache
@@ -2481,8 +2587,6 @@ function syncMemberPersonalRooms() {
             };
         });
 }
-
-// Em modo ONLINE opera 100% no Firebase; em modo OFFLINE mantém os dados localmente até ativar a chave Online
 
 fetchAllRoomsFromCloud = async function() {
     if (db && firebaseConnected) {
@@ -2504,6 +2608,8 @@ fetchAllRoomsFromCloud = async function() {
     const list = Object.values(roomsMap).sort((a, b) => {
         if (a.isGeneralRoom) return -1;
         if (b.isGeneralRoom) return 1;
+        if (a.isUnassignedRoom) return -1;
+        if (b.isUnassignedRoom) return 1;
         return String(a.roomName || a.id).localeCompare(String(b.roomName || b.id), 'pt-BR');
     });
     availableRoomsCache = list;
@@ -2524,19 +2630,26 @@ loadExistingRoomsDropdown = async function(showFeedback = false) {
     let visibleRooms = availableRoomsCache;
     if (selectedUser && !isSelectedAdmin) {
         const myRoomCode = getMemberPersonalRoomCode(selectedUser.id);
-        visibleRooms = availableRoomsCache.filter(r => normalizeIdentityStr(r.id) === myRoomCode);
+        visibleRooms = availableRoomsCache.filter(r =>
+            normalizeIdentityStr(r.id) === myRoomCode || isUnassignedRoomCode(r.id)
+        );
     }
 
     selectEl.innerHTML = visibleRooms.map(r => {
         const code = String(r.id).toLowerCase();
         const label = String(r.roomName || r.id).toUpperCase();
-        return `<option value="${escapeHtml(code)}">📂 ${escapeHtml(label)}</option>`;
+        const icon = isUnassignedRoomCode(code) ? '📥' : '📂';
+        return `<option value="${escapeHtml(code)}">${icon} ${escapeHtml(label)}</option>`;
     }).join('');
 
     if (selectedUser && !isSelectedAdmin) {
-        selectEl.value = getMemberPersonalRoomCode(selectedUser.id);
+        if (currentWorkspace && isUnassignedRoomCode(currentWorkspace)) {
+            selectEl.value = UNASSIGNED_ROOM_CODE;
+        } else {
+            selectEl.value = getMemberPersonalRoomCode(selectedUser.id);
+        }
         if (hintEl) {
-            hintEl.innerHTML = `<span class="text-emerald-600 dark:text-emerald-400 font-semibold"><i class="fa-solid fa-door-open mr-1"></i>Sala exclusiva do membro <strong>${escapeHtml(selectedUser.fullName || selectedUser.id)}</strong> (exibe todas as tarefas e subtarefas atribuídas a você).</span>`;
+            hintEl.innerHTML = `<span class="text-emerald-600 dark:text-emerald-400 font-semibold"><i class="fa-solid fa-door-open mr-1"></i>Você pode acessar sua <strong>Sala Pessoal</strong> ou a <strong>Sala de Tarefas Não Atribuídas</strong>.</span>`;
         }
     } else {
         if (currentWorkspace && visibleRooms.some(r => normalizeIdentityStr(r.id) === normalizeIdentityStr(currentWorkspace))) {
@@ -2545,7 +2658,7 @@ loadExistingRoomsDropdown = async function(showFeedback = false) {
             selectEl.value = 'geral';
         }
         if (hintEl) {
-            hintEl.textContent = 'Como Administrador, você pode acessar a Sala Geral ou inspecionar a sala individual de qualquer membro.';
+            hintEl.textContent = 'Como Administrador, você pode acessar a Sala Geral, a Sala de Não Atribuídas ou inspecionar a sala individual de qualquer membro.';
         }
     }
 };
@@ -2555,6 +2668,17 @@ handleUserSelectChange = function() {
     _origHandleUserSelectChange();
     loadExistingRoomsDropdown(false);
 };
+
+function toggleUnassignedRoomView() {
+    if (isUnassignedRoomCode(currentWorkspace)) {
+        const fallbackRoom = isCurrentUserAdmin
+            ? 'geral'
+            : (currentUserLogin ? getMemberPersonalRoomCode(currentUserLogin) : 'geral');
+        handleQuickRoomSwitch(fallbackRoom);
+    } else {
+        handleQuickRoomSwitch(UNASSIGNED_ROOM_CODE);
+    }
+}
 
 function handleQuickRoomSwitch(newRoomCode) {
     if (!newRoomCode) return;
@@ -2570,8 +2694,12 @@ function handleQuickRoomSwitch(newRoomCode) {
     renderAdminQuickRoomSwitcher();
     renderAll();
     updateCloudStatusUI('synced');
-    const owner = getRoomOwnerDescriptor(currentWorkspace);
-    showToast(owner ? `Visualizando a Sala de ${owner.fullName || owner.id}` : 'Visualizando a Sala Geral (Todos os Projetos)', 'info');
+    if (isUnassignedRoomCode(currentWorkspace)) {
+        showToast('Visualizando a Sala de Tarefas Não Atribuídas (Sem Responsável)', 'info');
+    } else {
+        const owner = getRoomOwnerDescriptor(currentWorkspace);
+        showToast(owner ? `Visualizando a Sala de ${owner.fullName || owner.id}` : 'Visualizando a Sala Geral (Todos os Projetos)', 'info');
+    }
 }
 
 function renderAdminQuickRoomSwitcher() {
@@ -2579,16 +2707,37 @@ function renderAdminQuickRoomSwitcher() {
     const badgeEl = document.getElementById('headerRoomBadge');
     const menuRoomEl = document.getElementById('menuRoomName');
     const quickSelect = document.getElementById('headerQuickRoomSelect');
+    const unassignedBtn = document.getElementById('headerUnassignedRoomBtn');
+    const unassignedBadge = document.getElementById('headerUnassignedCountBadge');
+
+    // Conta quantas tarefas ativas estão não atribuídas
+    const unassignedCount = (tasks || []).filter(t => !t.archived && isTaskOrSubtaskUnassigned(t)).length;
+    if (unassignedBadge) {
+        unassignedBadge.textContent = unassignedCount;
+    }
 
     if (isAuthenticated && !isCurrentUserAdmin && currentUserLogin) {
         const expectedRoom = getMemberPersonalRoomCode(currentUserLogin);
-        if (currentWorkspace !== expectedRoom) {
+        if (currentWorkspace !== expectedRoom && !isUnassignedRoomCode(currentWorkspace)) {
             currentWorkspace = expectedRoom;
         }
     }
 
+    const inUnassignedRoom = isUnassignedRoomCode(currentWorkspace);
+    if (unassignedBtn) {
+        if (inUnassignedRoom) {
+            unassignedBtn.className = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500 text-white border border-amber-600 text-[11px] font-extrabold uppercase tracking-wider shadow-sm transition shrink-0';
+            unassignedBtn.title = 'Você está na Sala de Tarefas Não Atribuídas. Clique para voltar à sua sala.';
+        } else {
+            unassignedBtn.className = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] font-extrabold uppercase tracking-wider transition shrink-0';
+            unassignedBtn.title = 'Abrir Sala de Tarefas Não Atribuídas (Sem Responsável)';
+        }
+    }
+
     const owner = getRoomOwnerDescriptor(currentWorkspace);
-    const displayRoomTitle = owner ? `SALA: ${(owner.fullName || owner.id).toUpperCase()}` : 'SALA GERAL';
+    const displayRoomTitle = inUnassignedRoom
+        ? 'SALA: NÃO ATRIBUÍDAS'
+        : (owner ? `SALA: ${(owner.fullName || owner.id).toUpperCase()}` : 'SALA GERAL');
 
     if (badgeEl) badgeEl.textContent = displayRoomTitle;
     if (menuRoomEl) menuRoomEl.textContent = displayRoomTitle;
@@ -2597,16 +2746,26 @@ function renderAdminQuickRoomSwitcher() {
     const adminRoomWrapper = document.getElementById('headerAdminRoomWrapper');
 
     if (quickSelect) {
-        if (isAuthenticated && isCurrentUserAdmin) {
+        if (isAuthenticated) {
             const roomsMap = getLocalRoomConfigs();
-            const allRooms = Object.values(roomsMap).sort((a, b) => {
+            let allRooms = Object.values(roomsMap).sort((a, b) => {
                 if (a.isGeneralRoom) return -1;
                 if (b.isGeneralRoom) return 1;
+                if (a.isUnassignedRoom) return -1;
+                if (b.isUnassignedRoom) return 1;
                 return String(a.roomName || a.id).localeCompare(String(b.roomName || b.id), 'pt-BR');
             });
+
+            if (!isCurrentUserAdmin && currentUserLogin) {
+                const myRoom = getMemberPersonalRoomCode(currentUserLogin);
+                allRooms = allRooms.filter(r => normalizeIdentityStr(r.id) === myRoom || isUnassignedRoomCode(r.id));
+            }
+
             quickSelect.innerHTML = allRooms.map(r => {
                 const sel = normalizeIdentityStr(r.id) === normalizeIdentityStr(currentWorkspace) ? 'selected' : '';
-                const cleanLabel = r.isGeneralRoom ? 'SALA GERAL (TODAS)' : String(r.roomName || r.id);
+                let cleanLabel = String(r.roomName || r.id);
+                if (r.isGeneralRoom) cleanLabel = '📂 SALA GERAL (TODAS)';
+                else if (r.isUnassignedRoom) cleanLabel = `📥 NÃO ATRIBUÍDAS (${unassignedCount})`;
                 return `<option value="${escapeHtml(r.id)}" ${sel}>${escapeHtml(cleanLabel)}</option>`;
             }).join('');
             if (adminRoomWrapper) {
@@ -2640,7 +2799,8 @@ populateAuthorsDatalist = function() {
     const memberFilterEl = document.getElementById('memberFilter');
     if (memberFilterEl) {
         const prev = memberFilterEl.value || 'all';
-        memberFilterEl.innerHTML = `<option value="all">👥 Todos da sala</option>` +
+        memberFilterEl.innerHTML = `<option value="all">👥 Todos da sala (Inclui Não Atribuídas)</option>` +
+            `<option value="__unassigned__">📥 Sem responsável (Não Atribuídas)</option>` +
             allMembers.map(m => `<option value="${escapeHtml(m.name.toLowerCase())}">👤 ${escapeHtml(m.name)}</option>`).join('');
         if ([...memberFilterEl.options].some(o => o.value === prev)) {
             memberFilterEl.value = prev;
@@ -2837,26 +2997,33 @@ updateExcelPreviewItemAssignee = function(idx, newAssignee) {
  * 13. REORDENAÇÃO DE TAREFAS E SUBTAREFAS, SELEÇÃO DE MEMBROS AO CLICAR
  *     E PRESERVAÇÃO DE ROLAGEM (SEM PULAR PARA O INÍCIO AO FINALIZAR)
  *************************************************************************/
-function buildMemberSelectOptionsHTML(selectedVal = '', allowAllMembers = true, placeholderText = '👤 Sem responsável') {
+function buildMemberSelectOptionsHTML(selectedVal = '', allowAllMembers = true, placeholderText = '👤 Sem responsável', includeMultiPickerOption = true) {
     const allMembers = getAllTeamMembersList();
     const list = allowAllMembers
         ? allMembers
         : allMembers.filter(m => doesAssigneeMatchUser(m.name, currentAuthor, currentUserLogin));
 
-    const cleanSel = String(selectedVal || '').trim();
+    const parsedList = parseAssigneesList(selectedVal);
+    const cleanSel = parsedList.join(', ');
+    const isMulti = parsedList.length > 1;
     let foundSel = false;
 
     const opts = list.map(m => {
-        const isSel = cleanSel && normalizeIdentityStr(m.name) === normalizeIdentityStr(cleanSel);
+        const isSel = !isMulti && cleanSel && normalizeIdentityStr(m.name) === normalizeIdentityStr(cleanSel);
         if (isSel) foundSel = true;
         return `<option value="${escapeHtml(m.name)}" ${isSel ? 'selected' : ''}>👤 ${escapeHtml(m.name)}</option>`;
     });
 
     if (cleanSel && !foundSel) {
-        opts.unshift(`<option value="${escapeHtml(cleanSel)}" selected>👤 ${escapeHtml(cleanSel)}</option>`);
+        const iconPrefix = isMulti ? `👥 (${parsedList.length}) ` : '👤 ';
+        opts.unshift(`<option value="${escapeHtml(cleanSel)}" selected>${iconPrefix}${escapeHtml(cleanSel)}</option>`);
     }
 
-    return `<option value="" ${!cleanSel ? 'selected' : ''}>${escapeHtml(placeholderText)}</option>` + opts.join('');
+    const multiOpt = includeMultiPickerOption
+        ? `<option value="__MULTI_PICKER__" class="font-bold text-indigo-600">👥 + Selecionar mais de um membro...</option>`
+        : '';
+
+    return `<option value="" ${!cleanSel ? 'selected' : ''}>${escapeHtml(placeholderText)}</option>` + multiOpt + opts.join('');
 }
 
 function populateStaticMemberSelects() {
@@ -3194,7 +3361,7 @@ document.addEventListener('click', function(e) {
 
     if (!activeHighlightedTaskId) return;
     const insideCard = e.target.closest('[data-task-card-id]');
-    const insideModal = e.target.closest('#taskModal, #deletePasswordModal, #roomAuthModal, #adminPanelModal, #userDirectoryModal, #excelImportModal, #jsonImportChoiceModal, #notificationsModal, #archivedTasksModal, #waitingReasonModal');
+    const insideModal = e.target.closest('#taskModal, #deletePasswordModal, #roomAuthModal, #adminPanelModal, #userDirectoryModal, #excelImportModal, #jsonImportChoiceModal, #notificationsModal, #archivedTasksModal, #waitingReasonModal, #scheduleExceptionAuthModal, #changePasswordModal');
     if (!insideCard && !insideModal) {
         activeHighlightedTaskId = null;
         renderAll();
@@ -3640,8 +3807,9 @@ function getWorkSettings() {
                 workDays: parsed.workDays || { 1: true, 2: true, 3: true, 4: true, 5: true, 6: false, 0: false },
                 weekendOvertime: Boolean(parsed.weekendOvertime),
                 holidayOvertime: Boolean(parsed.holidayOvertime),
-                dateOverrides: parsed.dateOverrides || {}, // { 'YYYY-MM-DD': 'work' | 'overtime' | 'off' }
-                customHolidays: parsed.customHolidays || {} // { 'YYYY-MM-DD': 'Nome do Feriado' }
+                dateOverrides: parsed.dateOverrides || {}, // { 'YYYY-MM-DD': 'work' | 'overtime' | 'off' | 'vacation' }
+                customHolidays: parsed.customHolidays || {}, // { 'YYYY-MM-DD': 'Nome do Feriado' }
+                memberEntries: Array.isArray(parsed.memberEntries) ? parsed.memberEntries : [] // [{ id, member, type: 'overtime'|'off'|'vacation'|'work', startDate, endDate, note }]
             };
         }
     } catch(e){}
@@ -3650,13 +3818,17 @@ function getWorkSettings() {
         weekendOvertime: false,
         holidayOvertime: false,
         dateOverrides: {},
-        customHolidays: {}
+        customHolidays: {},
+        memberEntries: []
     };
 }
 
 function saveWorkSettings(settings) {
     try {
         localStorage.setItem(WORK_SETTINGS_KEY, JSON.stringify(settings));
+        if (typeof isOnlineModeEnabled !== 'undefined' && isOnlineModeEnabled && db && firebaseConnected) {
+            db.collection('config_jornada_v1').doc('work_settings').set(JSON.parse(JSON.stringify(settings)), { merge: true }).catch(() => {});
+        }
     } catch(e){}
 }
 
@@ -3681,11 +3853,46 @@ function getHolidayNameForDate(dateIsoStr, settings = null) {
 }
 
 /**
- * Avalia o status exato de um dia na Timeline:
- * - Por padrão: Seg a Sex = Trabalho (8h), Sáb/Dom e Feriados = Folga (a menos que marcados como Hora Extra).
- * - Se o usuário clicou no checkbox daquele dia específico na Timeline (dateOverrides[dateIso]), respeita a escolha!
+ * Busca lançamento de escala específico do membro (ou geral 'all') para uma data YYYY-MM-DD.
+ * Prioriza lançamento individual do membro sobre lançamento geral da equipe.
  */
-function evaluateTimelineDayStatus(dayMs, settings = null) {
+function getMemberScheduleEntryForDate(dateIsoStr, memberName = null, settings = null) {
+    if (!dateIsoStr) return null;
+    const st = settings || getWorkSettings();
+    const entries = Array.isArray(st.memberEntries) ? st.memberEntries : [];
+    if (entries.length === 0) return null;
+
+    if (memberName && memberName !== 'all') {
+        const cleanMember = normalizeIdentityStr(memberName);
+        for (let i = entries.length - 1; i >= 0; i--) {
+            const e = entries[i];
+            if (!e || !e.member || e.member === 'all') continue;
+            if (normalizeIdentityStr(e.member) === cleanMember || doesAssigneeMatchUser(e.member, memberName)) {
+                if (dateIsoStr >= e.startDate && dateIsoStr <= e.endDate) {
+                    return e;
+                }
+            }
+        }
+    }
+
+    // Verifica lançamentos gerais ('all') que cubram esta data
+    for (let i = entries.length - 1; i >= 0; i--) {
+        const e = entries[i];
+        if (e && (!e.member || e.member === 'all')) {
+            if (dateIsoStr >= e.startDate && dateIsoStr <= e.endDate) {
+                return e;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Avalia o status exato de um dia na Timeline (geral ou para um integrante específico `memberName`):
+ * - Respeita lançamentos individuais por membro (⚡ Hora Extra +8h, 🛋️ Folga 0h, 🏖️ Período de Férias 0h)
+ * - Respeita `dateOverrides[dateIso]` e feriados nacionais/municipais.
+ */
+function evaluateTimelineDayStatus(dayMs, settings = null, memberName = null) {
     const st = settings || getWorkSettings();
     const d = new Date(dayMs);
     const dayOfWeek = d.getDay(); // 0 = Dom, 6 = Sáb
@@ -3694,12 +3901,18 @@ function evaluateTimelineDayStatus(dayMs, settings = null) {
     const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
     const isHoliday = Boolean(holidayName);
 
-    const override = st.dateOverrides ? st.dateOverrides[dateIso] : undefined;
+    const memberEntry = getMemberScheduleEntryForDate(dateIso, memberName, st);
+    const override = memberEntry ? memberEntry.type : (st.dateOverrides ? st.dateOverrides[dateIso] : undefined);
 
     let isWorking = false;
     let isOvertime = false;
+    let isVacation = false;
 
-    if (override === 'overtime') {
+    if (override === 'vacation') {
+        isWorking = false;
+        isOvertime = false;
+        isVacation = true;
+    } else if (override === 'overtime') {
         isWorking = true;
         isOvertime = true;
     } else if (override === 'work') {
@@ -3731,10 +3944,12 @@ function evaluateTimelineDayStatus(dayMs, settings = null) {
     }
 
     let statusBadgeText = '8h Útil';
-    if (!isWorking) {
-        statusBadgeText = isHoliday ? 'Feriado (Folga)' : 'Folga';
+    if (isVacation) {
+        statusBadgeText = '🏖️ Férias (0h)';
+    } else if (!isWorking) {
+        statusBadgeText = isHoliday ? 'Feriado (Folga)' : 'Folga (0h)';
     } else if (isOvertime) {
-        statusBadgeText = isHoliday ? 'Feriado • H. Extra' : 'Hora Extra (8h)';
+        statusBadgeText = isHoliday ? 'Feriado • H. Extra' : 'Hora Extra (+8h)';
     }
 
     return {
@@ -3745,42 +3960,48 @@ function evaluateTimelineDayStatus(dayMs, settings = null) {
         holidayName,
         isWorking,
         isOvertime,
+        isVacation,
         isRestDay: !isWorking,
+        memberEntry,
         statusBadgeText
     };
 }
 
 /**
- * Alterna o dia de trabalho clicando diretamente sobre o cabeçalho/checkbox daquele dia na Timeline:
- * - Se for Sábado, Domingo ou Feriado: marcar o checkbox ativa o dia como Hora Extra; desmarcar volta para Folga.
- * - Se for dia de semana comum: marcar ativa como Dia Útil (8h); desmarcar define como Folga/Recesso.
+ * SENHA OBRIGATÓRIA AO CLICAR EM UM DIA NA TIMELINE:
+ * Abre a janela de confirmação por senha permitindo escolher o membro (ou toda a equipe),
+ * o tipo (Hora Extra +8h, Folga 0h, ou Período de Férias) e o intervalo de datas.
  */
-function toggleTimelineDayWorkCheckbox(dateIsoStr) {
+function toggleTimelineDayWorkCheckbox(dateIsoStr, memberName = null) {
     const st = getWorkSettings();
-    if (!st.dateOverrides) st.dateOverrides = {};
-
     const [y, m, d] = dateIsoStr.split('-').map(Number);
     const dayMs = new Date(y, m - 1, d).setHours(0, 0, 0, 0);
-    const currentStatus = evaluateTimelineDayStatus(dayMs, st);
-    const formattedDate = `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
 
-    if (currentStatus.isWorking) {
-        st.dateOverrides[dateIsoStr] = 'off';
-        saveWorkSettings(st);
-        showToast(`Dia ${formattedDate} definido como FOLGA no cronograma.`, 'info');
-    } else {
-        if (currentStatus.isWeekend || currentStatus.isHoliday) {
-            st.dateOverrides[dateIsoStr] = 'overtime';
-            saveWorkSettings(st);
-            const reason = currentStatus.isHoliday ? `Feriado (${currentStatus.holidayName})` : 'Fim de Semana';
-            showToast(`${formattedDate} (${reason}) ativado como HORA EXTRA (+8h)!`, 'success');
-        } else {
-            st.dateOverrides[dateIsoStr] = 'work';
-            saveWorkSettings(st);
-            showToast(`Dia ${formattedDate} ativado como Dia Útil de Trabalho (8h).`, 'success');
+    // Verifica se há filtro de membro ativo ou sala de membro para pré-selecionar o integrante
+    let defaultMember = memberName || 'all';
+    if (defaultMember === 'all') {
+        const roomOwner = typeof getRoomOwnerDescriptor === 'function' ? getRoomOwnerDescriptor(currentWorkspace) : null;
+        const memberFilterVal = (document.getElementById('memberFilter')?.value || 'all').trim();
+        if (roomOwner && (roomOwner.fullName || roomOwner.id)) {
+            defaultMember = roomOwner.fullName || roomOwner.id;
+        } else if (memberFilterVal !== 'all') {
+            const allM = typeof getAllTeamMembersList === 'function' ? getAllTeamMembersList() : [];
+            const found = allM.find(x => normalizeIdentityStr(x.name) === normalizeIdentityStr(memberFilterVal));
+            if (found) defaultMember = found.name;
         }
     }
-    renderAll();
+
+    const currentStatus = evaluateTimelineDayStatus(dayMs, st, defaultMember === 'all' ? null : defaultMember);
+    const suggestedType = currentStatus.isWorking ? 'off' : 'overtime';
+
+    openScheduleExceptionAuthModal({
+        mode: 'entry',
+        member: defaultMember,
+        type: suggestedType,
+        startDate: dateIsoStr,
+        endDate: dateIsoStr,
+        note: currentStatus.memberEntry?.note || ''
+    });
 }
 
 function addCustomHolidayInModal() {
@@ -3794,122 +4015,228 @@ function addCustomHolidayInModal() {
         return;
     }
 
-    const st = getWorkSettings();
-    if (!st.customHolidays) st.customHolidays = {};
-    st.customHolidays[dateVal] = nameVal;
-    // Garante que por padrão o novo feriado fique como folga até ser marcado como hora extra
-    if (st.dateOverrides && st.dateOverrides[dateVal] === 'work') {
-        delete st.dateOverrides[dateVal];
-    }
-    saveWorkSettings(st);
-    openWorkSettingsModal();
-    renderAll();
-    showToast(`Feriado "${nameVal}" (${formatDisplayDate(dateVal)}) cadastrado como folga padrão!`, 'success');
+    openScheduleExceptionAuthModal({
+        mode: 'custom_callback',
+        title: 'Senha para Cadastrar Feriado / Folga',
+        description: `Confirme sua senha para cadastrar o feriado <strong>"${escapeHtml(nameVal)}"</strong> em <strong>${formatDisplayDate(dateVal)}</strong> como folga no cronograma:`,
+        onAuthorized: async () => {
+            const st = getWorkSettings();
+            if (!st.customHolidays) st.customHolidays = {};
+            st.customHolidays[dateVal] = nameVal;
+            if (st.dateOverrides && st.dateOverrides[dateVal] === 'work') {
+                delete st.dateOverrides[dateVal];
+            }
+            saveWorkSettings(st);
+            openWorkSettingsModal();
+            renderAll();
+            showToast(`Feriado "${nameVal}" (${formatDisplayDate(dateVal)}) cadastrado após confirmação de senha!`, 'success');
+        }
+    });
 }
 
 function removeCustomHolidayInModal(dateIso) {
     const st = getWorkSettings();
-    if (st.customHolidays && st.customHolidays[dateIso]) {
-        delete st.customHolidays[dateIso];
-        saveWorkSettings(st);
-        openWorkSettingsModal();
-        renderAll();
-        showToast('Feriado personalizado removido.', 'info');
-    }
+    const hName = st.customHolidays?.[dateIso] || dateIso;
+    openScheduleExceptionAuthModal({
+        mode: 'custom_callback',
+        title: 'Senha para Remover Feriado',
+        description: `Confirme sua senha para remover o feriado <strong>"${escapeHtml(hName)}" (${formatDisplayDate(dateIso)})</strong>:`,
+        onAuthorized: async () => {
+            const curSt = getWorkSettings();
+            if (curSt.customHolidays && curSt.customHolidays[dateIso]) {
+                delete curSt.customHolidays[dateIso];
+                saveWorkSettings(curSt);
+                openWorkSettingsModal();
+                renderAll();
+                showToast('Feriado personalizado removido após confirmação de senha.', 'info');
+            }
+        }
+    });
+}
+
+function removeMemberScheduleEntry(entryId) {
+    const st = getWorkSettings();
+    const entry = (st.memberEntries || []).find(e => e.id === entryId);
+    if (!entry) return;
+    const targetLbl = (!entry.member || entry.member === 'all') ? 'Toda a Equipe' : entry.member;
+
+    openScheduleExceptionAuthModal({
+        mode: 'custom_callback',
+        title: 'Senha para Remover Escala / Férias',
+        description: `Confirme sua senha para remover o lançamento de <strong>${escapeHtml(targetLbl)}</strong> (${formatDisplayDate(entry.startDate)} a ${formatDisplayDate(entry.endDate)}):`,
+        onAuthorized: async () => {
+            const curSt = getWorkSettings();
+            curSt.memberEntries = (curSt.memberEntries || []).filter(e => e.id !== entryId);
+            if ((!entry.member || entry.member === 'all') && entry.startDate === entry.endDate && curSt.dateOverrides) {
+                delete curSt.dateOverrides[entry.startDate];
+            }
+            saveWorkSettings(curSt);
+            if (document.getElementById('workSettingsModal')) openWorkSettingsModal();
+            renderAll();
+            showToast('Lançamento de escala removido após confirmação de senha!', 'info');
+        }
+    });
 }
 
 function clearAllDateOverridesInModal() {
-    const st = getWorkSettings();
-    st.dateOverrides = {};
-    saveWorkSettings(st);
-    openWorkSettingsModal();
-    renderAll();
-    showToast('Exceções individuais de datas limpas (aplicando padrão semanal e feriados).', 'info');
+    openScheduleExceptionAuthModal({
+        mode: 'custom_callback',
+        title: 'Senha para Restaurar Padrão nas Datas',
+        description: 'Confirme sua senha para limpar todas as marcações individuais de folgas, férias e horas extras e restaurar a escala padrão:',
+        onAuthorized: async () => {
+            const st = getWorkSettings();
+            st.dateOverrides = {};
+            st.memberEntries = [];
+            saveWorkSettings(st);
+            openWorkSettingsModal();
+            renderAll();
+            showToast('Escalas individuais e exceções de datas restauradas para o padrão!', 'info');
+        }
+    });
 }
 
 function openWorkSettingsModal() {
     const st = getWorkSettings();
     const customEntries = Object.entries(st.customHolidays || {}).sort((a, b) => a[0].localeCompare(b[0]));
-    const overridesCount = Object.keys(st.dateOverrides || {}).length;
+    const memberEntries = Array.isArray(st.memberEntries)
+        ? [...st.memberEntries].sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')))
+        : [];
+    const overridesCount = Object.keys(st.dateOverrides || {}).length + memberEntries.length;
+
+    const typeMeta = {
+        overtime: { label: '⚡ Hora Extra (+8h)', badge: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30' },
+        off:      { label: '🛋️ Folga (0h)',       badge: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30' },
+        vacation: { label: '🏖️ Período de Férias (0h)', badge: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30' },
+        work:     { label: '💼 Dia Útil (8h)',     badge: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30' }
+    };
 
     const modalHtml = `
         <div id="workSettingsModal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn overflow-y-auto">
-            <div class="bg-white dark:bg-darkCard w-full max-w-lg rounded-2xl border border-slate-200 dark:border-darkBorder shadow-2xl overflow-hidden p-6 space-y-4 my-8">
+            <div class="bg-white dark:bg-darkCard w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-darkBorder shadow-2xl overflow-hidden p-6 space-y-4 my-8">
                 <div class="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-700">
-                    <h3 class="text-base font-bold flex items-center gap-2">
-                        <i class="fa-solid fa-business-time text-indigo-500"></i> Configurar Jornada, Feriados & Horas Extras
-                    </h3>
+                    <div>
+                        <h3 class="text-base font-bold flex items-center gap-2">
+                            <i class="fa-solid fa-business-time text-indigo-500"></i> Jornada, Feriados & Escala por Membro
+                        </h3>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Protegido por senha • Reflete automaticamente nos prazos e no Gráfico de Gantt</p>
+                    </div>
                     <button onclick="document.getElementById('workSettingsModal').remove()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
                 </div>
 
-                <div class="space-y-3 text-xs max-h-[75vh] overflow-y-auto pr-1">
-                    <div class="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-700 dark:text-indigo-300 leading-relaxed">
-                        <i class="fa-solid fa-hand-pointer mr-1"></i><strong>Dica Rápida:</strong> Você também pode configurar os dias de trabalho clicando diretamente sobre o <strong>checkbox de cada dia no cabeçalho da Timeline</strong>! Sábados, domingos e feriados são considerados <strong>Folga</strong> por padrão, a menos que marcados como <strong>Hora Extra</strong>.
+                <div class="space-y-4 text-xs max-h-[75vh] overflow-y-auto pr-1">
+                    <!-- SEÇÃO 1: ESCALA INDIVIDUAL POR MEMBRO DA EQUIPE (HORA EXTRA, FOLGA E FÉRIAS) -->
+                    <div class="p-3.5 rounded-2xl bg-indigo-500/5 border border-indigo-500/25 space-y-2.5">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                                <span class="font-extrabold uppercase tracking-wider text-[11px] text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-user-clock"></i> Escala por Membro (Hora Extra, Folga & Período de Férias)
+                                </span>
+                                <p class="text-[11px] text-slate-500 dark:text-slate-400">
+                                    Lance horas extras (+8h), folgas (0h) ou períodos de férias por integrante da equipe (exige senha).
+                                </p>
+                            </div>
+                            <button type="button" onclick="openScheduleExceptionAuthModal({ mode: 'entry' })" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-sm transition flex items-center gap-1.5 shrink-0">
+                                <i class="fa-solid fa-plus"></i> + Lançar Folga / H. Extra / Férias
+                            </button>
+                        </div>
+
+                        ${memberEntries.length === 0 ? `
+                            <div class="p-3 rounded-xl bg-white/70 dark:bg-slate-900/50 border border-slate-200/70 dark:border-slate-800 text-center text-[11px] text-slate-400">
+                                Nenhum lançamento individual de férias, folga ou hora extra cadastrado no momento.
+                            </div>
+                        ` : `
+                            <div class="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                                ${memberEntries.map(entry => {
+                                    const meta = typeMeta[entry.type] || typeMeta.overtime;
+                                    const memberLabel = (!entry.member || entry.member === 'all') ? '👥 Toda a Equipe (Geral)' : `👤 ${entry.member}`;
+                                    const periodLabel = entry.startDate === entry.endDate
+                                        ? formatDisplayDate(entry.startDate)
+                                        : `${formatDisplayDate(entry.startDate)} até ${formatDisplayDate(entry.endDate)}`;
+                                    return `
+                                        <div class="p-2.5 rounded-xl bg-white dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2">
+                                            <div class="flex items-center gap-2 flex-wrap min-w-0">
+                                                <span class="px-2 py-0.5 rounded-lg border text-[10px] font-extrabold ${meta.badge}">
+                                                    ${meta.label}
+                                                </span>
+                                                <span class="font-bold text-slate-800 dark:text-slate-100">${escapeHtml(memberLabel)}</span>
+                                                <span class="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-300 font-mono text-[10px] font-semibold">
+                                                    📅 ${periodLabel}
+                                                </span>
+                                                ${entry.note ? `<span class="text-[11px] text-slate-500 dark:text-slate-400 italic truncate max-w-[220px]" title="${escapeHtml(entry.note)}">"${escapeHtml(entry.note)}"</span>` : ''}
+                                            </div>
+                                            <button type="button" onclick="removeMemberScheduleEntry('${escapeHtml(entry.id)}')" class="p-1.5 rounded-lg hover:bg-rose-500/15 text-slate-400 hover:text-rose-600 transition shrink-0" title="Remover lançamento (exige senha)">
+                                                <i class="fa-solid fa-trash-can"></i>
+                                            </button>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        `}
                     </div>
 
-                    <div class="font-bold uppercase tracking-wider text-[11px] text-slate-500 dark:text-slate-400 pt-1">
-                        Padrão Semanal da Equipe (8h/dia):
+                    <!-- SEÇÃO 2: PADRÃO SEMANAL DA EQUIPE -->
+                    <div class="space-y-2">
+                        <div class="font-bold uppercase tracking-wider text-[11px] text-slate-500 dark:text-slate-400">
+                            Padrão Semanal da Equipe (8h/dia):
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                                <input type="checkbox" id="wDay_1" ${st.workDays[1] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
+                                <span class="font-bold">Segunda-feira</span>
+                            </label>
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                                <input type="checkbox" id="wDay_2" ${st.workDays[2] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
+                                <span class="font-bold">Terça-feira</span>
+                            </label>
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                                <input type="checkbox" id="wDay_3" ${st.workDays[3] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
+                                <span class="font-bold">Quarta-feira</span>
+                            </label>
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                                <input type="checkbox" id="wDay_4" ${st.workDays[4] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
+                                <span class="font-bold">Quinta-feira</span>
+                            </label>
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
+                                <input type="checkbox" id="wDay_5" ${st.workDays[5] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
+                                <span class="font-bold">Sexta-feira</span>
+                            </label>
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-amber-500/10 dark:bg-amber-950/20 border border-amber-500/30 cursor-pointer">
+                                <input type="checkbox" id="wDay_6" ${st.workDays[6] ? 'checked' : ''} class="rounded text-amber-600 w-4 h-4">
+                                <span class="font-bold text-amber-700 dark:text-amber-300">Sábado (Hora Extra)</span>
+                            </label>
+                            <label class="flex items-center gap-2 p-2 rounded-xl bg-rose-500/10 dark:bg-rose-950/20 border border-rose-500/30 cursor-pointer col-span-2">
+                                <input type="checkbox" id="wDay_0" ${st.workDays[0] ? 'checked' : ''} class="rounded text-rose-600 w-4 h-4">
+                                <span class="font-bold text-rose-700 dark:text-rose-300">Domingo (Folga Padrão / Marcar p/ Hora Extra)</span>
+                            </label>
+                        </div>
+
+                        <div class="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-2">
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" id="weekendOvertimeCheck" ${st.weekendOvertime ? 'checked' : ''} class="rounded text-amber-600 w-4 h-4">
+                                <span class="font-semibold text-slate-700 dark:text-slate-200">Incluir todos os Sábados e Domingos como Hora Extra por padrão</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" id="holidayOvertimeCheck" ${st.holidayOvertime ? 'checked' : ''} class="rounded text-amber-600 w-4 h-4">
+                                <span class="font-semibold text-slate-700 dark:text-slate-200">Incluir Feriados Nacionais/Municipais como Hora Extra por padrão</span>
+                            </label>
+                        </div>
                     </div>
 
-                    <div class="grid grid-cols-2 gap-2">
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
-                            <input type="checkbox" id="wDay_1" ${st.workDays[1] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
-                            <span class="font-bold">Segunda-feira</span>
-                        </label>
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
-                            <input type="checkbox" id="wDay_2" ${st.workDays[2] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
-                            <span class="font-bold">Terça-feira</span>
-                        </label>
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
-                            <input type="checkbox" id="wDay_3" ${st.workDays[3] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
-                            <span class="font-bold">Quarta-feira</span>
-                        </label>
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
-                            <input type="checkbox" id="wDay_4" ${st.workDays[4] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
-                            <span class="font-bold">Quinta-feira</span>
-                        </label>
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer">
-                            <input type="checkbox" id="wDay_5" ${st.workDays[5] ? 'checked' : ''} class="rounded text-indigo-600 w-4 h-4">
-                            <span class="font-bold">Sexta-feira</span>
-                        </label>
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-amber-500/10 dark:bg-amber-950/20 border border-amber-500/30 cursor-pointer">
-                            <input type="checkbox" id="wDay_6" ${st.workDays[6] ? 'checked' : ''} class="rounded text-amber-600 w-4 h-4">
-                            <span class="font-bold text-amber-700 dark:text-amber-300">Sábado (Hora Extra)</span>
-                        </label>
-                        <label class="flex items-center gap-2 p-2 rounded-xl bg-rose-500/10 dark:bg-rose-950/20 border border-rose-500/30 cursor-pointer col-span-2">
-                            <input type="checkbox" id="wDay_0" ${st.workDays[0] ? 'checked' : ''} class="rounded text-rose-600 w-4 h-4">
-                            <span class="font-bold text-rose-700 dark:text-rose-300">Domingo (Folga Padrão / Marcar p/ Hora Extra)</span>
-                        </label>
-                    </div>
-
-                    <div class="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-2">
-                        <label class="flex items-center gap-2 cursor-pointer select-none">
-                            <input type="checkbox" id="weekendOvertimeCheck" ${st.weekendOvertime ? 'checked' : ''} class="rounded text-amber-600 w-4 h-4">
-                            <span class="font-semibold text-slate-700 dark:text-slate-200">Incluir todos os Sábados e Domingos como Hora Extra por padrão</span>
-                        </label>
-                        <label class="flex items-center gap-2 cursor-pointer select-none">
-                            <input type="checkbox" id="holidayOvertimeCheck" ${st.holidayOvertime ? 'checked' : ''} class="rounded text-amber-600 w-4 h-4">
-                            <span class="font-semibold text-slate-700 dark:text-slate-200">Incluir Feriados Nacionais/Municipais como Hora Extra por padrão</span>
-                        </label>
-                    </div>
-
-                    <!-- Gestão de Feriados Personalizados / Pontes -->
+                    <!-- SEÇÃO 3: FERIADOS NACIONAIS & MUNICIPAIS -->
                     <div class="pt-3 border-t border-slate-200 dark:border-slate-700 space-y-2">
                         <div class="flex items-center justify-between">
                             <span class="font-bold uppercase tracking-wider text-[11px] text-slate-500 dark:text-slate-400">
                                 <i class="fa-solid fa-umbrella-beach text-rose-500 mr-1"></i>Feriados Nacionais (Automáticos) & Municipais
                             </span>
                         </div>
-                        <p class="text-[11px] text-slate-400">
-                            Feriados nacionais fixos e móveis (Carnaval, Sexta-feira Santa, Tiradentes, 1º de Maio, Corpus Christi, 7 de Setembro, 12/Out, Finados, 15/Nov, 20/Nov, Natal) já vêm configurados automaticamente como <strong>Folga</strong>. Adicione feriados locais abaixo se desejar:
-                        </p>
                         <div class="flex flex-col sm:flex-row gap-2">
                             <input type="date" id="newHolidayDateInput" class="px-2.5 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs">
                             <input type="text" id="newHolidayNameInput" placeholder="Nome do feriado ou ponte..." class="flex-1 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs">
                             <button type="button" onclick="addCustomHolidayInModal()" class="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shrink-0">
-                                + Feriado
+                                + Feriado (c/ Senha)
                             </button>
                         </div>
                         ${customEntries.length > 0 ? `
@@ -3927,7 +4254,7 @@ function openWorkSettingsModal() {
                     ${overridesCount > 0 ? `
                         <div class="pt-2 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
                             <span class="text-[11px] text-amber-600 dark:text-amber-400 font-semibold">
-                                <i class="fa-solid fa-calendar-check mr-1"></i>${overridesCount} data(s) com marcação individual na Timeline
+                                <i class="fa-solid fa-calendar-check mr-1"></i>${overridesCount} lançamento(s) / exceção(ões) ativa(s)
                             </span>
                             <button type="button" onclick="clearAllDateOverridesInModal()" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-rose-500/15 text-slate-600 dark:text-slate-300 hover:text-rose-500 text-[11px] font-semibold transition">
                                 Restaurar Padrão nas Datas
@@ -3937,8 +4264,10 @@ function openWorkSettingsModal() {
                 </div>
 
                 <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-                    <button onclick="document.getElementById('workSettingsModal').remove()" class="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold">Cancelar</button>
-                    <button onclick="saveWorkSettingsFromModal()" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md">Salvar Jornada</button>
+                    <button onclick="document.getElementById('workSettingsModal').remove()" class="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold">Fechar</button>
+                    <button onclick="saveWorkSettingsFromModal()" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md flex items-center gap-1.5">
+                        <i class="fa-solid fa-lock text-[10px]"></i> Salvar Jornada (Com Senha)
+                    </button>
                 </div>
             </div>
         </div>
@@ -3961,16 +4290,25 @@ function saveWorkSettingsFromModal() {
     };
     const weekendOvertime = Boolean(document.getElementById('weekendOvertimeCheck')?.checked);
     const holidayOvertime = Boolean(document.getElementById('holidayOvertimeCheck')?.checked);
-    saveWorkSettings({
-        workDays,
-        weekendOvertime,
-        holidayOvertime,
-        dateOverrides: prev.dateOverrides || {},
-        customHolidays: prev.customHolidays || {}
+
+    openScheduleExceptionAuthModal({
+        mode: 'custom_callback',
+        title: 'Confirmar Alteração de Jornada com Senha',
+        description: 'Digite sua senha para salvar e aplicar as alterações no padrão semanal de jornada e horas extras:',
+        onAuthorized: async () => {
+            saveWorkSettings({
+                workDays,
+                weekendOvertime,
+                holidayOvertime,
+                dateOverrides: prev.dateOverrides || {},
+                customHolidays: prev.customHolidays || {},
+                memberEntries: prev.memberEntries || []
+            });
+            document.getElementById('workSettingsModal')?.remove();
+            showToast('Configurações de jornada salvas após confirmação de senha!', 'success');
+            renderAll();
+        }
     });
-    document.getElementById('workSettingsModal')?.remove();
-    showToast('Configurações de jornada, feriados e horas extras salvas!', 'success');
-    renderAll();
 }
 
 // =========================================================================
@@ -4198,48 +4536,54 @@ function toggleTimelineWeekWorkCheckbox(datesCsv) {
     const isoList = String(datesCsv).split(',').map(s => s.trim()).filter(Boolean);
     if (isoList.length === 0) return;
 
-    const st = getWorkSettings();
-    if (!st.dateOverrides) st.dateOverrides = {};
+    const firstIso = isoList[0];
+    const lastIso = isoList[isoList.length - 1];
 
-    // Verifica quantos dias dessa semana estão ativos atualmente
-    const evals = isoList.map(iso => {
-        const [y, m, d] = iso.split('-').map(Number);
-        const dayMs = new Date(y, m - 1, d).setHours(0, 0, 0, 0);
-        return { iso, status: evaluateTimelineDayStatus(dayMs, st) };
-    });
+    openScheduleExceptionAuthModal({
+        mode: 'custom_callback',
+        title: 'Confirmar Alteração da Semana com Senha',
+        description: `Digite sua senha para alternar a escala de trabalho/hora extra/folga da semana de <strong>${formatDisplayDate(firstIso)} a ${formatDisplayDate(lastIso)}</strong>:`,
+        onAuthorized: async () => {
+            const st = getWorkSettings();
+            if (!st.dateOverrides) st.dateOverrides = {};
 
-    const allWorking = evals.every(e => e.status.isWorking);
-    const anyWeekdayWorking = evals.some(e => !e.status.isWeekend && !e.status.isHoliday && e.status.isWorking);
+            const evals = isoList.map(iso => {
+                const [y, m, d] = iso.split('-').map(Number);
+                const dayMs = new Date(y, m - 1, d).setHours(0, 0, 0, 0);
+                return { iso, status: evaluateTimelineDayStatus(dayMs, st) };
+            });
 
-    if (!anyWeekdayWorking) {
-        // Nenhum dia útil ativo -> Ativa os dias úteis (Seg-Sex) dessa semana
-        evals.forEach(e => {
-            if (!e.status.isWeekend && !e.status.isHoliday) {
-                st.dateOverrides[e.iso] = 'work';
-            }
-        });
-        saveWorkSettings(st);
-        showToast('Dias úteis da semana ativados (8h/dia)!', 'success');
-    } else if (!allWorking) {
-        // Dias úteis já estão ativos -> Ativa também Sáb/Dom/Feriados da semana como Hora Extra!
-        evals.forEach(e => {
-            if (e.status.isWeekend || e.status.isHoliday) {
-                st.dateOverrides[e.iso] = 'overtime';
+            const allWorking = evals.every(e => e.status.isWorking);
+            const anyWeekdayWorking = evals.some(e => !e.status.isWeekend && !e.status.isHoliday && e.status.isWorking);
+
+            if (!anyWeekdayWorking) {
+                evals.forEach(e => {
+                    if (!e.status.isWeekend && !e.status.isHoliday) {
+                        st.dateOverrides[e.iso] = 'work';
+                    }
+                });
+                saveWorkSettings(st);
+                showToast('Dias úteis da semana ativados (8h/dia) após confirmação de senha!', 'success');
+            } else if (!allWorking) {
+                evals.forEach(e => {
+                    if (e.status.isWeekend || e.status.isHoliday) {
+                        st.dateOverrides[e.iso] = 'overtime';
+                    } else {
+                        st.dateOverrides[e.iso] = 'work';
+                    }
+                });
+                saveWorkSettings(st);
+                showToast('Semana inteira ativada com Hora Extra após confirmação de senha!', 'success');
             } else {
-                st.dateOverrides[e.iso] = 'work';
+                evals.forEach(e => {
+                    delete st.dateOverrides[e.iso];
+                });
+                saveWorkSettings(st);
+                showToast('Semana restaurada para a jornada padrão após confirmação de senha.', 'info');
             }
-        });
-        saveWorkSettings(st);
-        showToast('Semana inteira ativada (incluindo Sáb/Dom/Feriados como Hora Extra)!', 'success');
-    } else {
-        // Todos já estavam ativos -> Restaura padrão semanal daquela semana (folga no fim de semana/feriado)
-        evals.forEach(e => {
-            delete st.dateOverrides[e.iso];
-        });
-        saveWorkSettings(st);
-        showToast('Semana restaurada para a jornada padrão (Fins de semana e feriados como Folga).', 'info');
-    }
-    renderAll();
+            renderAll();
+        }
+    });
 }
 
 function jumpGanttTimelineToDate(dateStr) {
@@ -4286,20 +4630,21 @@ if (!ganttNowTimer) {
 
 /**
  * Avança um cursor de tempo (em ms) para o próximo instante em que o dia seja de trabalho
- * (pula automaticamente sábados, domingos e feriados que estejam como folga).
+ * para o membro especificado (`memberName`), pulando automaticamente sábados, domingos,
+ * feriados, folgas individuais e períodos de férias daquele integrante.
  */
-function snapToWorkingDayMs(cursorMs, settings) {
+function snapToWorkingDayMs(cursorMs, settings, memberName = null) {
     const DAY_MS = 86400000;
     let dayStartMs = new Date(cursorMs).setHours(0, 0, 0, 0);
     let offsetInDayMs = Math.max(0, cursorMs - dayStartMs);
     let guard = 0;
     while (guard < 366) {
-        const status = evaluateTimelineDayStatus(dayStartMs, settings);
+        const status = evaluateTimelineDayStatus(dayStartMs, settings, memberName);
         if (status.isWorking) {
             return dayStartMs + offsetInDayMs;
         }
         dayStartMs += DAY_MS;
-        offsetInDayMs = 0; // Ao pular um dia de folga, começa no início (00:00) do próximo dia útil
+        offsetInDayMs = 0; // Ao pular um dia de folga/férias, começa no início (00:00) do próximo dia útil
         guard++;
     }
     return cursorMs;
@@ -4307,11 +4652,11 @@ function snapToWorkingDayMs(cursorMs, settings) {
 
 /**
  * Calcula startMs e endMs reais alocando `hoursToSchedule` horas (base 8h/dia)
- * pulando todos os dias de folga (Sáb, Dom e Feriados não marcados como Hora Extra).
+ * respeitando a escala individual de `memberName` (Hora Extra +8h, Folga 0h e Período de Férias 0h).
  */
-function allocateWorkingHoursOnTimeline(initialCursorMs, hoursToSchedule, settings) {
+function allocateWorkingHoursOnTimeline(initialCursorMs, hoursToSchedule, settings, memberName = null) {
     const DAY_MS = 86400000;
-    let startMs = snapToWorkingDayMs(initialCursorMs, settings);
+    let startMs = snapToWorkingDayMs(initialCursorMs, settings, memberName);
     let cursorMs = startMs;
     let remainingHours = Math.max(0.1, Number(hoursToSchedule) || 2);
     let guard = 0;
@@ -4319,10 +4664,10 @@ function allocateWorkingHoursOnTimeline(initialCursorMs, hoursToSchedule, settin
     while (remainingHours > 0.0001 && guard < 730) {
         guard++;
         const dayStartMs = new Date(cursorMs).setHours(0, 0, 0, 0);
-        const dayStatus = evaluateTimelineDayStatus(dayStartMs, settings);
+        const dayStatus = evaluateTimelineDayStatus(dayStartMs, settings, memberName);
 
         if (!dayStatus.isWorking) {
-            // Dia de folga (Sábado, Domingo ou Feriado sem hora extra): avança para o dia seguinte
+            // Dia de folga ou período de férias do membro: avança para o dia seguinte
             cursorMs = dayStartMs + DAY_MS;
             continue;
         }
@@ -4351,10 +4696,6 @@ function allocateWorkingHoursOnTimeline(initialCursorMs, hoursToSchedule, settin
     };
 }
 
-/**
- * Agrupa os dias da janela da Timeline em Semanas do Mês (Sem. 1, Sem. 2, Sem. 3, Sem. 4, Sem. 5 de cada mês)
- * para exibição limpa e sem esmagamento quando a escala de dias é grande (21, 30, 60 ou 90 dias).
- */
 function buildMonthWeekBuckets(dayColumns) {
     const buckets = [];
     const monthNamesShort = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
@@ -4419,11 +4760,19 @@ function renderGanttView(filteredTasks, containerEl) {
     const activeMemberFilterVal = (document.getElementById('memberFilter')?.value || 'all').toLowerCase().trim();
 
     const shouldShowAssigneeInCurrentDiagram = (assigneeName) => {
+        const isUnassignedItem = isAssigneeEmptyOrUnassigned(assigneeName);
+        if (isUnassignedRoomCode(currentWorkspace)) {
+            return isUnassignedItem;
+        }
+        if (activeMemberFilterVal === '__unassigned__') {
+            return isUnassignedItem;
+        }
         if (roomOwner) {
-            if (!doesAssigneeMatchUser(assigneeName, roomOwner)) return false;
+            // Na sala do membro, mostra os itens do membro e também os itens sem responsável (não atribuídos)
+            if (!doesAssigneeMatchUser(assigneeName, roomOwner) && !isUnassignedItem) return false;
         }
         if (activeMemberFilterVal !== 'all') {
-            if (normalizeIdentityStr(assigneeName) !== activeMemberFilterVal) return false;
+            if (normalizeIdentityStr(assigneeName) !== activeMemberFilterVal && !isUnassignedItem) return false;
         }
         return true;
     };
@@ -4439,39 +4788,49 @@ function renderGanttView(filteredTasks, containerEl) {
 
         if (subs.length > 0) {
             subs.forEach((sub, sIdx) => {
-                const assignee = (sub.assignee || task.author || 'Sem responsável').trim() || 'Sem responsável';
+                const rawAssigneeStr = (sub.assignee || task.author || 'Sem responsável').trim() || 'Sem responsável';
+                const parsedMembers = parseAssigneesList(rawAssigneeStr);
+                const targetMembers = parsedMembers.length > 0 ? parsedMembers : ['Sem responsável'];
+
+                targetMembers.forEach(assignee => {
+                    if (!shouldShowAssigneeInCurrentDiagram(assignee)) return;
+                    if (!workItemsByUser[assignee]) workItemsByUser[assignee] = [];
+                    workItemsByUser[assignee].push({
+                        type: 'subtask',
+                        taskId: task.id,
+                        subIdx: sIdx,
+                        taskTitle: task.title,
+                        itemTitle: sub.text,
+                        hours: Math.max(0.1, Number(sub.hours) || 2),
+                        completed: Boolean(sub.completed || task.status === 'done'),
+                        waiting: Boolean(sub.waiting) && !sub.completed && task.status !== 'done',
+                        waitingReason: sub.waitingReason || '',
+                        priority: task.priority || 'media',
+                        dueDate: task.dueDate,
+                        baseStartMs: taskStartDayMs
+                    });
+                });
+            });
+        } else {
+            const rawAssigneeStr = (task.author || 'Sem responsável').trim() || 'Sem responsável';
+            const parsedMembers = parseAssigneesList(rawAssigneeStr);
+            const targetMembers = parsedMembers.length > 0 ? parsedMembers : ['Sem responsável'];
+
+            targetMembers.forEach(assignee => {
                 if (!shouldShowAssigneeInCurrentDiagram(assignee)) return;
                 if (!workItemsByUser[assignee]) workItemsByUser[assignee] = [];
                 workItemsByUser[assignee].push({
-                    type: 'subtask',
+                    type: 'task',
                     taskId: task.id,
-                    subIdx: sIdx,
+                    subIdx: -1,
                     taskTitle: task.title,
-                    itemTitle: sub.text,
-                    hours: Math.max(0.1, Number(sub.hours) || 2),
-                    completed: Boolean(sub.completed || task.status === 'done'),
-                    waiting: Boolean(sub.waiting) && !sub.completed && task.status !== 'done',
-                    waitingReason: sub.waitingReason || '',
+                    itemTitle: task.title,
+                    hours: Math.max(0.1, Number(task.estimatedHours) || 8),
+                    completed: task.status === 'done',
                     priority: task.priority || 'media',
                     dueDate: task.dueDate,
                     baseStartMs: taskStartDayMs
                 });
-            });
-        } else {
-            const assignee = (task.author || 'Sem responsável').trim() || 'Sem responsável';
-            if (!shouldShowAssigneeInCurrentDiagram(assignee)) return;
-            if (!workItemsByUser[assignee]) workItemsByUser[assignee] = [];
-            workItemsByUser[assignee].push({
-                type: 'task',
-                taskId: task.id,
-                subIdx: -1,
-                taskTitle: task.title,
-                itemTitle: task.title,
-                hours: Math.max(0.1, Number(task.estimatedHours) || 8),
-                completed: task.status === 'done',
-                priority: task.priority || 'media',
-                dueDate: task.dueDate,
-                baseStartMs: taskStartDayMs
             });
         }
     });
@@ -4541,7 +4900,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                 if (currentEpochMs === null || item.baseStartMs > currentEpochMs) {
                                     currentEpochMs = item.baseStartMs;
                                 }
-                                const alloc = allocateWorkingHoursOnTimeline(currentEpochMs, item.hours, settings);
+                                const alloc = allocateWorkingHoursOnTimeline(currentEpochMs, item.hours, settings, user);
                                 currentEpochMs = alloc.nextCursorMs;
 
                                 const exceedsDeadline = Boolean(m.dueEndMs && alloc.endMs > m.dueEndMs && !item.completed);
@@ -4567,7 +4926,7 @@ function renderGanttView(filteredTasks, containerEl) {
                     if (currentEpochMs === null || item.baseStartMs > currentEpochMs) {
                         currentEpochMs = item.baseStartMs;
                     }
-                    const alloc = allocateWorkingHoursOnTimeline(currentEpochMs, item.hours, settings);
+                    const alloc = allocateWorkingHoursOnTimeline(currentEpochMs, item.hours, settings, user);
                     currentEpochMs = alloc.nextCursorMs;
 
                     const exceedsDeadline = Boolean(currentMacro.dueEndMs && alloc.endMs > currentMacro.dueEndMs && !item.completed);
@@ -4741,7 +5100,11 @@ function renderGanttView(filteredTasks, containerEl) {
                             </button>
                         </div>
 
-                        <button type="button" onclick="openWorkSettingsModal()" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 transition flex items-center gap-1.5 shadow-sm" title="Configurar dias úteis padrão, feriados e horas extras">
+                        <button type="button" onclick="openScheduleExceptionAuthModal({ mode: 'entry' })" class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 text-[11px] font-extrabold border border-amber-500/30 transition flex items-center gap-1.5 shadow-sm" title="Atribuir Hora Extra (+8h), Folga (0h) ou Período de Férias por Membro da Equipe (Exige Senha)">
+                            <i class="fa-solid fa-user-clock text-amber-500"></i> <span>+ Escala / Férias</span>
+                        </button>
+
+                        <button type="button" onclick="openWorkSettingsModal()" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 transition flex items-center gap-1.5 shadow-sm" title="Configurar dias úteis padrão, feriados e escala por membro">
                             <i class="fa-solid fa-gear text-indigo-500"></i> <span>Jornada & Feriados</span>
                         </button>
 
@@ -4953,18 +5316,36 @@ function renderGanttView(filteredTasks, containerEl) {
 
         const rowHeight = Math.max(58, (visibleRows.length * 36) + 14);
 
+        const userDayEvals = dayColumns.map(col => evaluateTimelineDayStatus(col.colMs, settings, user));
+        const userVacDays = userDayEvals.filter(e => e.isVacation).length;
+        const userOvtDays = userDayEvals.filter(e => e.isOvertime).length;
+        const userCustomOffDays = userDayEvals.filter(e => e.memberEntry && e.memberEntry.type === 'off').length;
+        const safeUserParam = escapeHtml(user).replace(/'/g, "\\'");
+
         html += `
             <div class="flex items-stretch gap-2.5 w-full">
                 <div class="sticky left-0 z-30 w-[185px] sm:w-[200px] shrink-0 p-2.5 rounded-xl bg-slate-50/95 dark:bg-slate-800/95 backdrop-blur-sm border border-slate-200/80 dark:border-slate-700/70 flex flex-col justify-between gap-2 shadow-sm">
-                    <div class="flex items-center gap-2">
-                        <div class="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-[11px] shadow-sm shrink-0">
-                            ${escapeHtml(user.substring(0, 2).toUpperCase())}
+                    <div class="flex items-center justify-between gap-1.5">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <div class="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-[11px] shadow-sm shrink-0">
+                                ${escapeHtml(user.substring(0, 2).toUpperCase())}
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <div class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate" title="${escapeHtml(user)}">${escapeHtml(user)}</div>
+                                <div class="text-[10px] text-slate-400 font-semibold">${macros.length} tarefa(s) macro</div>
+                            </div>
                         </div>
-                        <div class="min-w-0 flex-1">
-                            <div class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate" title="${escapeHtml(user)}">${escapeHtml(user)}</div>
-                            <div class="text-[10px] text-slate-400 font-semibold">${macros.length} tarefa(s) macro</div>
-                        </div>
+                        <button type="button" onclick="openScheduleExceptionAuthModal({ mode: 'entry', member: '${safeUserParam}' })" class="w-6 h-6 rounded-lg bg-indigo-500/10 hover:bg-indigo-600 text-indigo-600 dark:text-indigo-400 hover:text-white border border-indigo-500/25 flex items-center justify-center transition shrink-0" title="Atribuir Hora Extra, Folga ou Férias para ${escapeHtml(user)} (Exige Senha)">
+                            <i class="fa-solid fa-user-clock text-[10px]"></i>
+                        </button>
                     </div>
+                    ${(userVacDays > 0 || userOvtDays > 0 || userCustomOffDays > 0) ? `
+                        <div class="flex flex-wrap items-center gap-1">
+                            ${userVacDays > 0 ? `<span class="px-1.5 py-0.2 rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 text-[9px] font-extrabold" title="${userVacDays} dia(s) em Período de Férias nesta visualização">🏖️ ${userVacDays}d Férias</span>` : ''}
+                            ${userOvtDays > 0 ? `<span class="px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[9px] font-extrabold" title="${userOvtDays} dia(s) com Hora Extra (+8h) nesta visualização">⚡ ${userOvtDays}d Ext</span>` : ''}
+                            ${userCustomOffDays > 0 ? `<span class="px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30 text-[9px] font-extrabold" title="${userCustomOffDays} dia(s) de Folga Individual nesta visualização">🛋️ ${userCustomOffDays}d Folga</span>` : ''}
+                        </div>
+                    ` : ''}
 
                     <div class="space-y-1 pt-1 border-t border-slate-200/70 dark:border-slate-700/60">
                         <div class="flex items-center justify-between text-[10px] font-bold">
@@ -4982,12 +5363,37 @@ function renderGanttView(filteredTasks, containerEl) {
                 </div>
 
                 <div class="relative rounded-xl bg-slate-50/70 dark:bg-slate-900/40 border border-slate-200/80 dark:border-slate-800 overflow-hidden transition-all" style="${timelineTrackStyle} height: ${rowHeight}px;">
-                    <!-- Colunas de Grade Diária (Alinhadas em proporção 1:1 com o cabeçalho de dias e semanas acima) -->
+                    <!-- Colunas de Grade Diária por Membro (Destaca Férias, Folgas e Horas Extras individuais deste integrante) -->
                     <div class="absolute inset-0 grid pointer-events-none" style="grid-template-columns: repeat(${totalTimelineDays}, minmax(0, 1fr));">
                         ${dayColumns.map((col, cIdx) => {
+                            const uDay = userDayEvals[cIdx] || col;
                             const isWeekEndBorder = new Date(col.colMs).getDay() === 0 || col.dayNum % 7 === 0;
+                            let colBgClass = cIdx % 2 === 1 ? 'bg-slate-100/30 dark:bg-slate-800/15' : '';
+                            let badgeHtml = '';
+
+                            if (uDay.isVacation) {
+                                colBgClass = 'bg-cyan-500/15 dark:bg-cyan-500/20';
+                                if (totalTimelineDays <= 30) {
+                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-cyan-600/80 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">🏖️Férias</span>`;
+                                }
+                            } else if (uDay.memberEntry && uDay.memberEntry.type === 'off') {
+                                colBgClass = 'bg-rose-500/10 dark:bg-rose-500/15';
+                                if (totalTimelineDays <= 30) {
+                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-rose-600/80 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">🛋️Folga</span>`;
+                                }
+                            } else if (uDay.isOvertime) {
+                                colBgClass = 'bg-amber-500/10 dark:bg-amber-500/15';
+                                if (uDay.memberEntry && uDay.memberEntry.member !== 'all' && totalTimelineDays <= 30) {
+                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-amber-500 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">⚡+8h</span>`;
+                                }
+                            } else if (col.isTodayCol) {
+                                colBgClass = 'bg-rose-500/5 dark:bg-rose-500/10';
+                            } else if (uDay.isRestDay) {
+                                colBgClass = 'bg-slate-200/45 dark:bg-slate-800/40';
+                            }
+
                             return `
-                                <div class="h-full border-r last:border-r-0 ${isWeekEndBorder && useMonthWeeksHeader ? 'border-slate-300 dark:border-slate-700' : 'border-dashed border-slate-200/70 dark:border-slate-800/80'} ${col.isTodayCol ? 'bg-rose-500/5 dark:bg-rose-500/10' : (col.isOvertime ? 'bg-amber-500/5 dark:bg-amber-500/10' : (col.isRestDay ? 'bg-slate-200/45 dark:bg-slate-800/40' : (cIdx % 2 === 1 ? 'bg-slate-100/30 dark:bg-slate-800/15' : '')))}"></div>
+                                <div class="h-full border-r last:border-r-0 flex flex-col items-center justify-start ${isWeekEndBorder && useMonthWeeksHeader ? 'border-slate-300 dark:border-slate-700' : 'border-dashed border-slate-200/70 dark:border-slate-800/80'} ${colBgClass}">${badgeHtml}</div>
                             `;
                         }).join('')}
                     </div>
@@ -5788,12 +6194,13 @@ async function handleConfirmScheduleExceptionWithPassword(event) {
 }
 
 // =========================================================================
-// CENTRAL / TELA DE AVISOS:
-// - AGRUPAMENTO POR TAREFA
-// - RETORNO PARA NÃO LIDO
-// - CÓPIA PARA QUEM CRIOU COM O MESMO STATUS SINCRONIZADO
-// - ENVIO DE RESPOSTA VINCULADO NO MESMO AVISO
-// - SEM MENSAGENS POR WHATSAPP
+// CENTRAL / TELA DE AVISOS (VISIBILIDADE RESTRITA E MENSAGENS DIRETAS):
+// 1. AVISOS DE TAREFA: Visíveis APENAS para o Responsável da Tarefa,
+//    a Pessoa que enviou o aviso e os Administradores.
+// 2. MENSAGEM DIRETA (PRIVADA): Visível APENAS para os interessados
+//    (Remetente e Destinatário diretos).
+// 3. AGRUPAMENTO POR TAREFA, RETORNO PARA NÃO LIDO, CÓPIA COM MESMO STATUS
+//    E RESPOSTAS VINCULADAS NO MESMO AVISO (MANTIDOS RECOLHIDOS POR PADRÃO)
 // =========================================================================
 function loadNotificationsFromLocal() {
     try {
@@ -5842,7 +6249,6 @@ function initNotificationsRealtimeListener() {
                 console.warn('Aviso listener de notificações:', err);
             });
         } catch (e) {}
-        // Também sincroniza configurações de jornada se existirem na nuvem
         try {
             db.collection('config_jornada_v1').doc('work_settings').onSnapshot(doc => {
                 if (doc && doc.exists) {
@@ -5892,11 +6298,6 @@ async function removeNotificationFromCloud(notifId) {
     }
 }
 
-/**
- * Status unificado e compartilhado entre destinatário e criador do aviso ("mesmo status"):
- * - Se `notif.isRead === true`, está Lido para ambos (destinatário e cópia de quem criou).
- * - Se `notif.isRead === false` (ou indefinido sem readBy), está Não Lido para ambos!
- */
 function isNotificationUnreadShared(notif) {
     if (!notif || notif.resolved) return false;
     if (typeof notif.isRead === 'boolean') {
@@ -5914,13 +6315,61 @@ function isNotificationCreatedByCurrentUser(notif) {
 
 function isNotificationTargetedAtCurrentUser(notif) {
     if (!notif) return false;
-    if (!notif.targetUser || notif.targetUser === 'Todos da Equipe') return true;
-    return doesAssigneeMatchUser(notif.targetUser, currentAuthor, currentUserLogin) ||
-           (notif.subAssignee && doesAssigneeMatchUser(notif.subAssignee, currentAuthor, currentUserLogin));
+    if (notif.targetUser && doesAssigneeMatchUser(notif.targetUser, currentAuthor, currentUserLogin)) return true;
+    if (notif.targetUserLogin && normalizeIdentityStr(notif.targetUserLogin) === normalizeIdentityStr(currentUserLogin)) return true;
+    return false;
+}
+
+function isCurrentUserResponsibleForNotificationTask(notif) {
+    if (!notif) return false;
+    if (notif.taskAuthor && doesAssigneeMatchUser(notif.taskAuthor, currentAuthor, currentUserLogin)) return true;
+    if (notif.taskId) {
+        const taskObj = (tasks || []).find(t => t.id === notif.taskId);
+        if (taskObj && taskObj.author && doesAssigneeMatchUser(taskObj.author, currentAuthor, currentUserLogin)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function isDirectMessageNotification(notif) {
+    if (!notif) return false;
+    return notif.type === 'direct_message' || Boolean(notif.isDirectMessage);
+}
+
+/**
+ * REGRA DE VISIBILIDADE DE AVISOS E MENSAGENS DIRETAS:
+ * - Caso 1: MENSAGEM DIRETA (`direct_message` / `isDirectMessage`):
+ *   Visível EXCLUSIVAMENTE para os interessados (pessoa que enviou e pessoa destinatária).
+ * - Caso 2: AVISO DE TAREFA (`waiting_item`, `task_alert`, `manual_alert`):
+ *   Visível APENAS para:
+ *   a) O Responsável da Tarefa (`task.author` / `notif.taskAuthor` / `notif.targetUser`),
+ *   b) A Pessoa que enviou o aviso (`notif.triggeredBy`),
+ *   c) Os Administradores (`isCurrentUserAdmin`).
+ */
+function canCurrentUserSeeNotification(notif) {
+    if (!notif) return false;
+    const isSender = isNotificationCreatedByCurrentUser(notif);
+    const isRecipient = isNotificationTargetedAtCurrentUser(notif);
+    const isTaskResponsible = isCurrentUserResponsibleForNotificationTask(notif);
+
+    // Se for Mensagem Direta: mostra APENAS para os interessados (remetente e destinatário)
+    if (isDirectMessageNotification(notif)) {
+        return isSender || isRecipient;
+    }
+
+    // Se for Aviso de Tarefa / Geral: mostra apenas para o Responsável da Tarefa, quem enviou o aviso e Administradores
+    if (isCurrentUserAdmin || currentUserRole === 'admin') return true;
+    if (isSender || isTaskResponsible || isRecipient) return true;
+
+    return false;
 }
 
 function isNotificationMineOrCreatedByMe(notif) {
-    return isNotificationTargetedAtCurrentUser(notif) || isNotificationCreatedByCurrentUser(notif);
+    if (!canCurrentUserSeeNotification(notif)) return false;
+    return isNotificationTargetedAtCurrentUser(notif) ||
+           isNotificationCreatedByCurrentUser(notif) ||
+           isCurrentUserResponsibleForNotificationTask(notif);
 }
 
 async function createWaitingItemNotification(task, subIdx = null, reason = '') {
@@ -5928,7 +6377,8 @@ async function createWaitingItemNotification(task, subIdx = null, reason = '') {
     const isSub = subIdx !== null && subIdx >= 0 && task.subtasks && task.subtasks[subIdx];
     const subObj = isSub ? task.subtasks[subIdx] : null;
     const itemTitle = isSub ? subObj.text : task.title;
-    const targetResponsible = (task.author || '').trim() || (subObj?.assignee || '').trim() || 'Sem responsável definido';
+    const taskAuthor = (task.author || '').trim();
+    const targetResponsible = taskAuthor || (subObj?.assignee || '').trim() || 'Responsável da Tarefa';
     const subAssignee = (subObj?.assignee || '').trim();
     const triggeredBy = (currentAuthor || currentUserLogin || 'Usuário').trim();
 
@@ -5942,12 +6392,14 @@ async function createWaitingItemNotification(task, subIdx = null, reason = '') {
     const notifObj = existing ? {
         ...existing,
         taskTitle: task.title,
+        taskAuthor,
         itemTitle,
         reason: reason || 'Aguardando',
         targetUser: targetResponsible,
         subAssignee,
         triggeredBy,
         triggeredByLogin: currentUserLogin || '',
+        isDirectMessage: false,
         keepCreatorCopy: true,
         isRead: false,
         readBy: [],
@@ -5959,6 +6411,7 @@ async function createWaitingItemNotification(task, subIdx = null, reason = '') {
         type: 'waiting_item',
         taskId: task.id,
         taskTitle: task.title,
+        taskAuthor,
         subIdx: isSub ? subIdx : null,
         itemTitle,
         reason: reason || 'Aguardando',
@@ -5966,6 +6419,7 @@ async function createWaitingItemNotification(task, subIdx = null, reason = '') {
         subAssignee,
         triggeredBy,
         triggeredByLogin: currentUserLogin || '',
+        isDirectMessage: false,
         keepCreatorCopy: true,
         isRead: false,
         readBy: [],
@@ -5994,6 +6448,7 @@ async function resolveWaitingNotificationsForTarget(taskId, subIdx = null) {
 
 function syncActiveWaitingItemsToNotifications() {
     (tasks || []).filter(t => !t.archived).forEach(task => {
+        const taskAuthor = (task.author || '').trim();
         if (task.status === 'waiting') {
             const hasActive = appNotifications.some(n => n.type === 'waiting_item' && n.taskId === task.id && n.subIdx === null);
             if (!hasActive) {
@@ -6002,12 +6457,14 @@ function syncActiveWaitingItemsToNotifications() {
                     type: 'waiting_item',
                     taskId: task.id,
                     taskTitle: task.title,
+                    taskAuthor,
                     subIdx: null,
                     itemTitle: task.title,
                     reason: task.waitingReason || 'Aguardando',
-                    targetUser: task.author || 'Responsável da Tarefa',
+                    targetUser: taskAuthor || 'Responsável da Tarefa',
                     subAssignee: '',
-                    triggeredBy: task.author || 'Sistema',
+                    triggeredBy: taskAuthor || 'Sistema',
+                    isDirectMessage: false,
                     keepCreatorCopy: true,
                     isRead: false,
                     readBy: [],
@@ -6027,12 +6484,14 @@ function syncActiveWaitingItemsToNotifications() {
                             type: 'waiting_item',
                             taskId: task.id,
                             taskTitle: task.title,
+                            taskAuthor,
                             subIdx: sIdx,
                             itemTitle: sub.text,
                             reason: sub.waitingReason || 'Aguardando',
-                            targetUser: task.author || sub.assignee || 'Responsável da Tarefa',
+                            targetUser: taskAuthor || sub.assignee || 'Responsável da Tarefa',
                             subAssignee: sub.assignee || '',
-                            triggeredBy: sub.assignee || task.author || 'Sistema',
+                            triggeredBy: sub.assignee || taskAuthor || 'Sistema',
+                            isDirectMessage: false,
                             keepCreatorCopy: true,
                             isRead: false,
                             readBy: [],
@@ -6051,7 +6510,8 @@ function syncActiveWaitingItemsToNotifications() {
 function updateArchivedAndNotificationsBadges() {
     syncActiveWaitingItemsToNotifications();
 
-    const unreadCount = appNotifications.filter(n => !n.resolved && isNotificationUnreadShared(n)).length;
+    const visibleNotifications = appNotifications.filter(n => canCurrentUserSeeNotification(n));
+    const unreadCount = visibleNotifications.filter(n => !n.resolved && isNotificationUnreadShared(n)).length;
     const notifBadge = document.getElementById('headerNotificationsBadge');
     const modalPill = document.getElementById('notificationsModalUnreadPill');
 
@@ -6080,6 +6540,27 @@ function updateArchivedAndNotificationsBadges() {
     }
 }
 
+function handleManualNotifTypeChange(typeVal) {
+    const taskSel = document.getElementById('manualNotifTaskSelect');
+    const targetSel = document.getElementById('manualNotifTargetSelect');
+    const msgInp = document.getElementById('manualNotifMessageInput');
+
+    if (typeVal === 'direct_message') {
+        if (msgInp) msgInp.placeholder = 'Mensagem direta privada (visível APENAS para você e o destinatário)...';
+        if (targetSel && typeof buildMemberSelectOptionsHTML === 'function') {
+            targetSel.innerHTML = buildMemberSelectOptionsHTML(targetSel.value || '', true, '🔒 Escolher destinatário da Mensagem Direta...');
+        }
+    } else {
+        if (msgInp) msgInp.placeholder = 'Aviso da tarefa (visível p/ Responsável da Tarefa, você e Admin)...';
+        if (targetSel && typeof buildMemberSelectOptionsHTML === 'function') {
+            targetSel.innerHTML = buildMemberSelectOptionsHTML(targetSel.value || '', true, '👤 Responsável da Tarefa / Destinatário...');
+        }
+        if (taskSel && taskSel.value) {
+            handleManualNotifTaskChange(taskSel.value);
+        }
+    }
+}
+
 function handleManualNotifTaskChange(selectedTaskId) {
     if (!selectedTaskId) return;
     const t = tasks.find(x => x.id === selectedTaskId);
@@ -6094,16 +6575,23 @@ function openNotificationsModal() {
     const modal = document.getElementById('notificationsModal');
     if (!modal) return;
 
+    const typeSel = document.getElementById('manualNotifTypeSelect');
+    const currentType = typeSel ? typeSel.value : 'task_alert';
+
     const targetSel = document.getElementById('manualNotifTargetSelect');
     if (targetSel && typeof buildMemberSelectOptionsHTML === 'function') {
-        targetSel.innerHTML = buildMemberSelectOptionsHTML('', true, '👥 Todos da Equipe');
+        targetSel.innerHTML = buildMemberSelectOptionsHTML(
+            '',
+            true,
+            currentType === 'direct_message' ? '🔒 Escolher destinatário da Mensagem Direta...' : '👤 Responsável da Tarefa / Destinatário...'
+        );
     }
 
     const taskSel = document.getElementById('manualNotifTaskSelect');
     if (taskSel) {
-        const activeTasks = (tasks || []).filter(t => !t.archived && doesTaskAppearInRoom(t, currentWorkspace));
-        taskSel.innerHTML = `<option value="">📂 Geral (Sem tarefa específica)</option>` +
-            activeTasks.map(t => `<option value="${escapeHtml(t.id)}">📂 ${escapeHtml(t.title)}</option>`).join('');
+        const activeTasks = (tasks || []).filter(t => !t.archived);
+        taskSel.innerHTML = `<option value="">📂 Sem tarefa específica</option>` +
+            activeTasks.map(t => `<option value="${escapeHtml(t.id)}">📂 ${escapeHtml(t.title)} (${escapeHtml(t.author || 'Sem resp.')})</option>`).join('');
     }
 
     renderNotificationsModalList();
@@ -6116,7 +6604,7 @@ function closeNotificationsModal() {
 
 function setNotificationsFilter(filterMode) {
     currentNotificationsFilter = filterMode;
-    ['all', 'mine', 'unread', 'waiting'].forEach(k => {
+    ['all', 'direct', 'mine', 'unread', 'waiting'].forEach(k => {
         const btn = document.getElementById('notifFilterBtn-' + k);
         if (btn) {
             btn.className = (k === filterMode)
@@ -6154,8 +6642,8 @@ function expandOrCollapseAllNotifications(expand) {
         expandedNotificationTaskGroups.clear();
         expandedNotificationCardsSet.clear();
     } else {
-        appNotifications.forEach(n => {
-            const gKey = n.taskId || '__geral__';
+        appNotifications.filter(n => canCurrentUserSeeNotification(n)).forEach(n => {
+            const gKey = isDirectMessageNotification(n) && !n.taskId ? '__mensagens_diretas__' : (n.taskId || '__geral__');
             expandedNotificationTaskGroups.add(gKey);
             expandedNotificationCardsSet.add(n.id);
         });
@@ -6177,7 +6665,15 @@ function renderNotificationsModalList() {
 
     updateArchivedAndNotificationsBadges();
 
-    const filtered = appNotifications.filter(n => {
+    // Filtra primeiro pela regra estrita de visibilidade:
+    // - Avisos de Tarefa: visíveis apenas p/ Responsável da Tarefa, Remetente e Administradores
+    // - Mensagens Diretas: visíveis apenas p/ os interessados (Remetente e Destinatário)
+    const visibleToMe = appNotifications.filter(n => canCurrentUserSeeNotification(n));
+
+    const filtered = visibleToMe.filter(n => {
+        if (currentNotificationsFilter === 'direct') {
+            return isDirectMessageNotification(n);
+        }
         if (currentNotificationsFilter === 'mine') {
             return isNotificationMineOrCreatedByMe(n);
         }
@@ -6191,8 +6687,9 @@ function renderNotificationsModalList() {
     });
 
     if (summaryEl) {
-        const activeWaitingCount = appNotifications.filter(n => n.type === 'waiting_item' && !n.resolved).length;
-        summaryEl.textContent = `${filtered.length} aviso(s) exibido(s) • ${activeWaitingCount} item(ns) aguardando • Status sincronizado entre criador e destinatário`;
+        const activeWaitingCount = visibleToMe.filter(n => n.type === 'waiting_item' && !n.resolved).length;
+        const directCount = visibleToMe.filter(n => isDirectMessageNotification(n)).length;
+        summaryEl.textContent = `${filtered.length} aviso(s) visível(is) p/ você • ${activeWaitingCount} aguardando • ${directCount} mensagem(ns) direta(s)`;
     }
 
     if (filtered.length === 0) {
@@ -6201,26 +6698,36 @@ function renderNotificationsModalList() {
                 <div class="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center text-xl mx-auto">
                     <i class="fa-regular fa-bell-slash"></i>
                 </div>
-                <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">Nenhum aviso encontrado neste filtro</h4>
-                <p class="text-xs text-slate-400 max-w-sm mx-auto">
-                    Os avisos são agrupados por tarefa e mantêm uma cópia com o mesmo status tanto para quem criou quanto para o responsável da tarefa.
+                <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">Nenhum aviso ou mensagem direta para você neste filtro</h4>
+                <p class="text-xs text-slate-400 max-w-md mx-auto">
+                    Os avisos de tarefas são visíveis apenas para o <strong>Responsável da Tarefa</strong>, quem <strong>enviou o aviso</strong> e <strong>Administradores</strong>. Já as <strong>Mensagens Diretas</strong> são exibidas exclusivamente para os interessados.
                 </p>
             </div>
         `;
         return;
     }
 
-    // AGRUPAMENTO DE AVISOS POR TAREFA
+    // AGRUPAMENTO POR TAREFA (E BLOCO DE MENSAGENS DIRETAS PRIVADAS)
     const taskGroupsMap = new Map();
     filtered.forEach(notif => {
-        const groupKey = notif.taskId || '__geral__';
+        const isDM = isDirectMessageNotification(notif);
+        const groupKey = (isDM && !notif.taskId) ? '__mensagens_diretas__' : (notif.taskId || '__geral__');
+
         if (!taskGroupsMap.has(groupKey)) {
             const taskObj = notif.taskId ? tasks.find(t => t.id === notif.taskId) : null;
+            let groupTitle = taskObj?.title || notif.taskTitle || 'Avisos sem Tarefa Específica';
+            let groupResponsible = taskObj?.author || notif.taskAuthor || notif.targetUser || 'Equipe';
+            if (groupKey === '__mensagens_diretas__') {
+                groupTitle = '🔒 Mensagens Diretas Privadas (Apenas Interessados)';
+                groupResponsible = 'Confidencial (Remetente ⇄ Destinatário)';
+            }
+
             taskGroupsMap.set(groupKey, {
                 groupKey,
+                isDirectGroup: groupKey === '__mensagens_diretas__',
                 taskId: notif.taskId || null,
-                taskTitle: taskObj?.title || notif.taskTitle || 'Comunicados Gerais (Sem Tarefa Vinculada)',
-                taskResponsible: taskObj?.author || notif.targetUser || 'Equipe',
+                taskTitle: groupTitle,
+                taskResponsible: groupResponsible,
                 items: []
             });
         }
@@ -6229,7 +6736,7 @@ function renderNotificationsModalList() {
 
     const groupsList = Array.from(taskGroupsMap.values());
 
-        container.innerHTML = groupsList.map(group => {
+    container.innerHTML = groupsList.map(group => {
         const isGroupExpanded = expandedNotificationTaskGroups.has(group.groupKey);
         const isGroupCollapsed = !isGroupExpanded;
         const unreadInGroup = group.items.filter(n => isNotificationUnreadShared(n)).length;
@@ -6237,21 +6744,21 @@ function renderNotificationsModalList() {
         const safeGroupKey = escapeHtml(group.groupKey).replace(/'/g, "\\'");
 
         return `
-            <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40 overflow-hidden shadow-sm">
-                <!-- Cabeçalho do Grupo da Tarefa (Recolhido por padrão • Clique para expandir/recolher) -->
-                <div onclick="toggleNotificationTaskGroupCollapse('${safeGroupKey}')" class="px-4 py-2.5 bg-slate-100 dark:bg-slate-800/90 border-b border-slate-200/80 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2 cursor-pointer select-none hover:bg-slate-200/60 dark:hover:bg-slate-800 transition">
+            <div class="rounded-2xl border ${group.isDirectGroup ? 'border-purple-500/40 bg-purple-500/5 dark:bg-purple-950/20' : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40'} overflow-hidden shadow-sm">
+                <!-- Cabeçalho do Grupo (Recolhido por padrão • Clique para expandir/recolher) -->
+                <div onclick="toggleNotificationTaskGroupCollapse('${safeGroupKey}')" class="px-4 py-2.5 ${group.isDirectGroup ? 'bg-purple-500/10 dark:bg-purple-900/30 border-purple-500/30' : 'bg-slate-100 dark:bg-slate-800/90 border-slate-200/80 dark:border-slate-700'} border-b flex flex-wrap items-center justify-between gap-2 cursor-pointer select-none hover:opacity-95 transition">
                     <div class="flex items-center gap-2 min-w-0 flex-1">
                         <i class="fa-solid ${isGroupCollapsed ? 'fa-chevron-right text-slate-400' : 'fa-chevron-down text-indigo-500'} text-xs shrink-0 transition"></i>
-                        <span class="w-6 h-6 rounded-lg bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 text-xs">
-                            <i class="fa-solid ${group.taskId ? 'fa-clipboard-list' : 'fa-bullhorn'}"></i>
+                        <span class="w-6 h-6 rounded-lg ${group.isDirectGroup ? 'bg-purple-600 text-white' : 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400'} flex items-center justify-center shrink-0 text-xs">
+                            <i class="fa-solid ${group.isDirectGroup ? 'fa-user-lock' : (group.taskId ? 'fa-clipboard-list' : 'fa-bullhorn')}"></i>
                         </span>
                         <div class="min-w-0 flex-1">
                             <div class="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-slate-100 truncate" title="${escapeHtml(group.taskTitle)}">
                                 ${escapeHtml(group.taskTitle)}
                             </div>
                             <div class="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                                <span><i class="fa-solid fa-user-shield text-indigo-500 mr-1"></i>Resp. Tarefa: <strong>${escapeHtml(group.taskResponsible)}</strong></span>
-                                <span class="text-indigo-500 font-semibold">${isGroupCollapsed ? '• Clique para abrir avisos' : '• Clique para recolher'}</span>
+                                <span><i class="fa-solid ${group.isDirectGroup ? 'fa-shield-halved text-purple-500' : 'fa-user-shield text-indigo-500'} mr-1"></i>${group.isDirectGroup ? 'Visibilidade:' : 'Resp. Tarefa:'} <strong>${escapeHtml(group.taskResponsible)}</strong></span>
+                                <span class="text-indigo-500 font-semibold">${isGroupCollapsed ? '• Clique para abrir' : '• Clique para recolher'}</span>
                             </div>
                         </div>
                     </div>
@@ -6268,7 +6775,7 @@ function renderNotificationsModalList() {
                             </span>
                         ` : ''}
                         <span class="px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-[10px] font-bold">
-                            ${group.items.length} aviso(s)
+                            ${group.items.length} item(ns)
                         </span>
                         ${group.taskId ? `
                             <button type="button" onclick="event.stopPropagation(); closeNotificationsModal(); openTaskModal('${escapeHtml(group.taskId)}')" class="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold transition flex items-center gap-1" title="Abrir Tarefa Principal">
@@ -6278,13 +6785,14 @@ function renderNotificationsModalList() {
                     </div>
                 </div>
 
-                <!-- Lista de Avisos pertencentes a esta Tarefa (Oculta/Recolhida por padrão) -->
+                <!-- Lista de Avisos pertencentes a este Grupo (Oculta/Recolhida por padrão) -->
                 <div class="${isGroupCollapsed ? 'hidden' : 'block'} p-3 space-y-2">
                     ${group.items.map(notif => {
                         const isUnread = isNotificationUnreadShared(notif);
                         const isTargetMe = isNotificationTargetedAtCurrentUser(notif);
                         const isCreatedByMe = isNotificationCreatedByCurrentUser(notif);
                         const isWaitingType = notif.type === 'waiting_item';
+                        const isDM = isDirectMessageNotification(notif);
                         const replies = Array.isArray(notif.replies) ? notif.replies : [];
                         const isNotifExpanded = expandedNotificationCardsSet.has(notif.id);
                         const summaryTitle = (notif.subIdx !== null && notif.subIdx !== undefined && notif.itemTitle)
@@ -6304,16 +6812,18 @@ function renderNotificationsModalList() {
                                     <div class="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
                                         <i class="fa-solid ${isNotifExpanded ? 'fa-chevron-down text-indigo-500' : 'fa-chevron-right text-slate-400'} text-[10px] shrink-0 transition mr-0.5"></i>
 
-                                        <!-- Status Sincronizado (Para Criador e Destinatário) -->
+                                        <!-- Tipo: Mensagem Direta Privada vs Aguardando vs Aviso de Tarefa -->
                                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider shrink-0 ${
                                             notif.resolved
                                                 ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
-                                                : (isWaitingType
-                                                    ? 'bg-amber-500 text-white shadow-sm'
-                                                    : 'bg-indigo-600 text-white shadow-sm')
-                                        }">
-                                            <i class="fa-solid ${notif.resolved ? 'fa-circle-check' : (isWaitingType ? 'fa-circle-pause' : 'fa-bullhorn')} text-[9px]"></i>
-                                            <span>${notif.resolved ? 'Resolvido' : (isWaitingType ? 'Aguardando' : 'Aviso')}</span>
+                                                : (isDM
+                                                    ? 'bg-purple-600 text-white shadow-sm'
+                                                    : (isWaitingType
+                                                        ? 'bg-amber-500 text-white shadow-sm'
+                                                        : 'bg-indigo-600 text-white shadow-sm'))
+                                        }" title="${isDM ? 'Mensagem Direta Privada: visível exclusivamente para remetente e destinatário' : 'Aviso de Tarefa: visível apenas para o Responsável da Tarefa, remetente e Administradores'}">
+                                            <i class="fa-solid ${notif.resolved ? 'fa-circle-check' : (isDM ? 'fa-lock' : (isWaitingType ? 'fa-circle-pause' : 'fa-bullhorn'))} text-[9px]"></i>
+                                            <span>${notif.resolved ? 'Resolvido' : (isDM ? 'Msg Direta' : (isWaitingType ? 'Aguardando' : 'Aviso Tarefa'))}</span>
                                         </span>
 
                                         <!-- Indicador Unificado de Status Lido / Não Lido -->
@@ -6321,19 +6831,19 @@ function renderNotificationsModalList() {
                                             isUnread
                                                 ? 'bg-rose-600 text-white shadow-sm'
                                                 : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                                        }" title="Status sincronizado tanto para o responsável da tarefa quanto na cópia de quem criou o aviso">
+                                        }" title="Status sincronizado tanto para o destinatário quanto na cópia de quem enviou">
                                             <i class="fa-solid ${isUnread ? 'fa-envelope' : 'fa-envelope-open-check'} text-[9px]"></i>
                                             <span>${isUnread ? 'NÃO LIDO' : 'LIDO'}${replies.length > 0 ? ` (${replies.length} resp.)` : ''}</span>
                                         </span>
 
                                         <!-- Resumo curto do Item / Motivo na linha recolhida -->
-                                        <span class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate max-w-[240px] sm:max-w-[340px]" title="${escapeHtml(summaryTitle)}">
+                                        <span class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate max-w-[220px] sm:max-w-[320px]" title="${escapeHtml(summaryTitle)}">
                                             ${escapeHtml(summaryTitle)}
                                         </span>
 
                                         ${isCreatedByMe ? `
-                                            <span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 shrink-0" title="Cópia mantida para você (criador do aviso) com o mesmo status do destinatário">
-                                                <i class="fa-solid fa-copy text-[8px]"></i> Sua Cópia
+                                            <span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 shrink-0" title="Cópia sincronizada mantida para você (quem enviou)">
+                                                <i class="fa-solid fa-copy text-[8px]"></i> Enviado por Você
                                             </span>
                                         ` : ''}
                                     </div>
@@ -6341,7 +6851,7 @@ function renderNotificationsModalList() {
                                     <!-- Ações Rápidas Visíveis Mesmo Recolhido -->
                                     <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
                                         <span class="hidden sm:inline text-[10px] text-slate-400">
-                                            De <strong>${escapeHtml(notif.triggeredBy || 'Sistema')}</strong> p/ <strong>${escapeHtml(notif.targetUser || 'Todos')}</strong>
+                                            De <strong>${escapeHtml(notif.triggeredBy || 'Sistema')}</strong> p/ <strong>${escapeHtml(notif.targetUser || 'Responsável')}</strong>
                                         </span>
                                         ${isUnread ? `
                                             <button type="button" onclick="markSingleNotificationAsRead('${escapeHtml(notif.id)}')" class="px-2 py-0.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-[10px] font-bold transition flex items-center gap-1" title="Marcar como lido">
@@ -6364,7 +6874,13 @@ function renderNotificationsModalList() {
                                 <!-- CORPO EXPANSÍVEL DO AVISO (Mantido recolhido por padrão • Abre ao clicar no aviso) -->
                                 <div class="${isNotifExpanded ? 'block' : 'hidden'} px-3.5 pb-3.5 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 space-y-2.5 bg-white/50 dark:bg-slate-900/25">
                                     <div class="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 dark:text-slate-400">
-                                        <span><i class="fa-solid fa-paper-plane text-amber-500 mr-1"></i>Enviado por <strong>${escapeHtml(notif.triggeredBy || 'Sistema')}</strong> para <strong>${escapeHtml(notif.targetUser || 'Todos')}</strong></span>
+                                        <span>
+                                            <i class="fa-solid ${isDM ? 'fa-user-lock text-purple-500' : 'fa-paper-plane text-amber-500'} mr-1"></i>
+                                            ${isDM ? 'Mensagem Direta Privada de' : 'Aviso enviado por'} <strong>${escapeHtml(notif.triggeredBy || 'Sistema')}</strong> para <strong>${escapeHtml(notif.targetUser || 'Responsável')}</strong>
+                                            <span class="ml-1 px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-slate-800 text-[9px] font-bold">
+                                                ${isDM ? '🔒 Visível apenas p/ remetente e destinatário' : '👁️ Visível p/ Resp. Tarefa, Remetente e Admin'}
+                                            </span>
+                                        </span>
                                         <span><i class="fa-regular fa-clock mr-1"></i>${formatNotificationDateTime(notif.createdAt)}</span>
                                     </div>
 
@@ -6376,9 +6892,9 @@ function renderNotificationsModalList() {
                                                 ${notif.subAssignee ? `<span class="text-[10px] text-slate-400 font-normal">(Resp. Item: ${escapeHtml(notif.subAssignee)})</span>` : ''}
                                             </div>
                                         ` : ''}
-                                        <div class="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-900 dark:text-amber-200 font-semibold flex items-start gap-2">
-                                            <i class="fa-solid fa-comment-dots text-amber-500 mt-0.5 shrink-0"></i>
-                                            <span><strong>Motivo / Mensagem:</strong> ${escapeHtml(notif.reason || '')}</span>
+                                        <div class="p-2.5 rounded-xl ${isDM ? 'bg-purple-500/10 border-purple-500/25 text-purple-900 dark:text-purple-200' : 'bg-amber-500/10 border-amber-500/25 text-amber-900 dark:text-amber-200'} border font-semibold flex items-start gap-2">
+                                            <i class="fa-solid ${isDM ? 'fa-envelope-open-text text-purple-500' : 'fa-comment-dots text-amber-500'} mt-0.5 shrink-0"></i>
+                                            <span><strong>${isDM ? 'Mensagem Direta:' : 'Motivo / Aviso:'}</strong> ${escapeHtml(notif.reason || '')}</span>
                                         </div>
                                     </div>
 
@@ -6466,7 +6982,6 @@ async function handleSendNotificationReply(event, notifId) {
         createdAt: Date.now()
     });
 
-    // Ao receber uma nova resposta vinculada, retorna para Não Lido para alertar as partes com o mesmo status!
     notif.isRead = false;
     notif.readBy = [];
     notif.updatedAt = Date.now();
@@ -6479,23 +6994,38 @@ async function handleSendNotificationReply(event, notifId) {
 
 async function handleCreateManualNotification(event) {
     event.preventDefault();
+    const typeSel = document.getElementById('manualNotifTypeSelect');
     const taskSel = document.getElementById('manualNotifTaskSelect');
     const targetSel = document.getElementById('manualNotifTargetSelect');
     const msgInp = document.getElementById('manualNotifMessageInput');
+
+    const notifMode = (typeSel?.value || 'task_alert');
+    const isDirect = (notifMode === 'direct_message');
     const msg = (msgInp?.value || '').trim();
     if (!msg) {
         showToast('Digite a mensagem do aviso.', 'error');
         return;
     }
+
     const selectedTaskId = (taskSel?.value || '').trim() || null;
     const taskObj = selectedTaskId ? tasks.find(t => t.id === selectedTaskId) : null;
-    const targetUser = (targetSel?.value || '').trim() || (taskObj?.author || 'Todos da Equipe');
+    const rawTarget = (targetSel?.value || '').trim();
+
+    if (isDirect && !rawTarget) {
+        showToast('Para enviar uma Mensagem Direta privada, selecione a pessoa destinatária!', 'error');
+        targetSel?.focus();
+        return;
+    }
+
+    const targetUser = rawTarget || (taskObj?.author || 'Responsável da Tarefa');
 
     const notifObj = {
-        id: 'notif_manual_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        type: 'manual_alert',
+        id: (isDirect ? 'notif_dm_' : 'notif_manual_') + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        type: isDirect ? 'direct_message' : 'manual_alert',
+        isDirectMessage: isDirect,
         taskId: taskObj ? taskObj.id : null,
         taskTitle: taskObj ? taskObj.title : '',
+        taskAuthor: taskObj ? (taskObj.author || '') : '',
         subIdx: null,
         itemTitle: '',
         reason: msg,
@@ -6513,7 +7043,12 @@ async function handleCreateManualNotification(event) {
     if (msgInp) msgInp.value = '';
     await upsertNotificationToCloud(notifObj);
     renderNotificationsModalList();
-    showToast(`Aviso enviado para "${targetUser}" (cópia sincronizada mantida para você)!`, 'success');
+    showToast(
+        isDirect
+            ? `Mensagem Direta privada enviada para "${targetUser}" (visível apenas para você e ${targetUser})!`
+            : `Aviso enviado para "${targetUser}" (visível apenas para o responsável da tarefa, você e Admin)!`,
+        'success'
+    );
 }
 
 async function markSingleNotificationAsRead(notifId) {
@@ -6543,7 +7078,8 @@ async function markSingleNotificationAsUnread(notifId) {
 
 async function markAllNotificationsAsRead() {
     const myKey = normalizeIdentityStr(currentUserLogin || currentAuthor || 'anon');
-    for (const notif of appNotifications) {
+    const visibleList = appNotifications.filter(n => canCurrentUserSeeNotification(n));
+    for (const notif of visibleList) {
         if (!Array.isArray(notif.readBy)) notif.readBy = [];
         if (!notif.readBy.map(normalizeIdentityStr).includes(myKey)) {
             notif.readBy.push(myKey);
@@ -6552,11 +7088,11 @@ async function markAllNotificationsAsRead() {
         await upsertNotificationToCloud(notif);
     }
     renderNotificationsModalList();
-    showToast('Todos os avisos foram marcados como lidos!', 'success');
+    showToast('Todos os seus avisos visíveis foram marcados como lidos!', 'success');
 }
 
 async function clearResolvedNotifications() {
-    const toRemove = appNotifications.filter(n => n.resolved || !isNotificationUnreadShared(n));
+    const toRemove = appNotifications.filter(n => canCurrentUserSeeNotification(n) && (n.resolved || !isNotificationUnreadShared(n)));
     for (const n of toRemove) {
         await removeNotificationFromCloud(n.id);
     }
@@ -6754,3 +7290,183 @@ function renderArchivedTasksModalList() {
 setTimeout(() => {
     initNotificationsRealtimeListener();
 }, 300);
+
+
+// =========================================================================
+// MÓDULO DE ATRIBUIÇÃO DE TAREFA OU SUBTAREFA PARA MAIS DE UM MEMBRO DA EQUIPE
+// =========================================================================
+let _pendingMultiMemberContext = null;
+
+function openMultiMemberPickerModal(ctx = {}) {
+    _pendingMultiMemberContext = ctx;
+    const modal = document.getElementById('multiMemberPickerModal');
+    const titleEl = document.getElementById('multiMemberPickerTitle');
+    const container = document.getElementById('multiMemberCheckboxesContainer');
+    if (!modal || !container) return;
+
+    if (titleEl) {
+        titleEl.textContent = ctx.title || 'Atribuir Membros da Equipe';
+    }
+
+    let currentVal = '';
+    if (ctx.mode === 'card_task') {
+        const t = tasks.find(x => x.id === ctx.taskId);
+        currentVal = t?.author || '';
+    } else if (ctx.mode === 'card_subtask') {
+        const t = tasks.find(x => x.id === ctx.taskId);
+        currentVal = t?.subtasks?.[ctx.subIdx]?.assignee || '';
+    } else if (ctx.mode === 'modal_subtask') {
+        currentVal = modalSubtasks[ctx.subIdx]?.assignee || '';
+    } else if (ctx.mode === 'modal_innertask') {
+        currentVal = modalSubtasks[ctx.subIdx]?.innerTasks?.[ctx.innerIdx]?.assignee || '';
+    } else if (ctx.mode === 'excel_item') {
+        currentVal = parsedExcelOrder?.items?.[ctx.itemIdx]?.assignee || '';
+    } else if (ctx.mode === 'input_select' || ctx.mode === 'excel_default_author') {
+        const sel = document.getElementById(ctx.selectId);
+        currentVal = (sel && sel.value !== '__MULTI_PICKER__') ? sel.value : (ctx.fallbackVal || '');
+    }
+
+    const selectedSet = new Set(parseAssigneesList(currentVal).map(normalizeIdentityStr));
+    const allMembers = getAllTeamMembersList();
+
+    if (allMembers.length === 0) {
+        container.innerHTML = `<p class="text-xs text-slate-400 italic py-4 text-center">Nenhum membro cadastrado ainda.</p>`;
+    } else {
+        container.innerHTML = allMembers.map(m => {
+            const isChecked = selectedSet.has(normalizeIdentityStr(m.name));
+            return `
+                <label class="flex items-center justify-between gap-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 hover:bg-indigo-500/10 border border-slate-200 dark:border-slate-700 cursor-pointer select-none transition">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <input type="checkbox" name="multiMemberCheckItem" value="${escapeHtml(m.name)}" ${isChecked ? 'checked' : ''} onchange="updateMultiMemberSelectedCounter()" class="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer shrink-0">
+                        <div class="min-w-0">
+                            <div class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">👤 ${escapeHtml(m.name)}</div>
+                            <div class="text-[10px] text-slate-400 truncate">${escapeHtml(m.subLabel || 'Membro da Equipe')}</div>
+                        </div>
+                    </div>
+                </label>
+            `;
+        }).join('');
+    }
+
+    updateMultiMemberSelectedCounter();
+    modal.classList.remove('hidden');
+}
+
+function updateMultiMemberSelectedCounter() {
+    const checked = document.querySelectorAll('#multiMemberCheckboxesContainer input[name="multiMemberCheckItem"]:checked');
+    const counterEl = document.getElementById('multiMemberSelectedCounter');
+    if (counterEl) {
+        counterEl.textContent = `${checked.length} membro(s) selecionado(s)`;
+    }
+}
+
+function toggleAllMultiMemberCheckboxes(state) {
+    document.querySelectorAll('#multiMemberCheckboxesContainer input[name="multiMemberCheckItem"]').forEach(chk => {
+        chk.checked = Boolean(state);
+    });
+    updateMultiMemberSelectedCounter();
+}
+
+function closeMultiMemberPickerModal() {
+    _pendingMultiMemberContext = null;
+    document.getElementById('multiMemberPickerModal')?.classList.add('hidden');
+    renderAll();
+}
+
+async function handleConfirmMultiMemberPicker(event) {
+    event.preventDefault();
+    if (!_pendingMultiMemberContext) {
+        closeMultiMemberPickerModal();
+        return;
+    }
+
+    const chosenNames = Array.from(
+        document.querySelectorAll('#multiMemberCheckboxesContainer input[name="multiMemberCheckItem"]:checked')
+    ).map(chk => chk.value.trim()).filter(Boolean);
+
+    const combinedStr = chosenNames.join(', ');
+    const ctx = _pendingMultiMemberContext;
+    _pendingMultiMemberContext = null;
+    document.getElementById('multiMemberPickerModal')?.classList.add('hidden');
+
+    if (ctx.mode === 'card_task') {
+        await updateCardTaskAssignee(ctx.taskId, combinedStr);
+    } else if (ctx.mode === 'card_subtask') {
+        await updateCardSubtaskAssignee(ctx.taskId, ctx.subIdx, combinedStr);
+    } else if (ctx.mode === 'modal_subtask') {
+        updateModalSubtaskAssignee(ctx.subIdx, combinedStr);
+        renderModalSubtasks();
+    } else if (ctx.mode === 'modal_innertask') {
+        updateInnerTaskAssignee(ctx.subIdx, ctx.innerIdx, combinedStr);
+        renderModalSubtasks();
+    } else if (ctx.mode === 'excel_item') {
+        updateExcelPreviewItemAssignee(ctx.itemIdx, combinedStr);
+    } else if (ctx.mode === 'excel_default_author') {
+        const sel = document.getElementById(ctx.selectId || 'importDefaultAuthor');
+        if (sel) {
+            sel.innerHTML = buildMemberSelectOptionsHTML(combinedStr, isCurrentUserAdmin, '👤 Sem resp.');
+            sel.value = combinedStr;
+        }
+        handleImportDefaultAuthorChange(combinedStr);
+    } else if (ctx.mode === 'input_select') {
+        const sel = document.getElementById(ctx.selectId);
+        if (sel) {
+            sel.innerHTML = buildMemberSelectOptionsHTML(combinedStr, true, '👤 Sem responsável');
+            sel.value = combinedStr;
+        }
+    }
+}
+
+const _baseUpdateCardTaskAssigneeMulti = updateCardTaskAssignee;
+updateCardTaskAssignee = async function(taskId, newAssignee) {
+    if (newAssignee === '__MULTI_PICKER__') {
+        openMultiMemberPickerModal({
+            mode: 'card_task',
+            taskId,
+            title: 'Selecionar Responsáveis pela Tarefa'
+        });
+        return;
+    }
+    await _baseUpdateCardTaskAssigneeMulti(taskId, newAssignee);
+};
+
+const _baseUpdateCardSubtaskAssigneeMulti = updateCardSubtaskAssignee;
+updateCardSubtaskAssignee = async function(taskId, subIdx, newAssignee) {
+    if (newAssignee === '__MULTI_PICKER__') {
+        openMultiMemberPickerModal({
+            mode: 'card_subtask',
+            taskId,
+            subIdx,
+            title: `Selecionar Membros — Subtarefa #${subIdx + 1}`
+        });
+        return;
+    }
+    await _baseUpdateCardSubtaskAssigneeMulti(taskId, subIdx, newAssignee);
+};
+
+const _baseUpdateModalSubtaskAssigneeMulti = updateModalSubtaskAssignee;
+updateModalSubtaskAssignee = function(subIdx, newAssignee) {
+    if (newAssignee === '__MULTI_PICKER__') {
+        openMultiMemberPickerModal({
+            mode: 'modal_subtask',
+            subIdx,
+            title: `Selecionar Membros — Subtarefa #${subIdx + 1}`
+        });
+        return;
+    }
+    _baseUpdateModalSubtaskAssigneeMulti(subIdx, newAssignee);
+};
+
+const _baseUpdateInnerTaskAssigneeMulti = updateInnerTaskAssignee;
+updateInnerTaskAssignee = function(subIdx, innerIdx, newAssignee) {
+    if (newAssignee === '__MULTI_PICKER__') {
+        openMultiMemberPickerModal({
+            mode: 'modal_innertask',
+            subIdx,
+            innerIdx,
+            title: `Selecionar Membros — Etapa Interna #${innerIdx + 1}`
+        });
+        return;
+    }
+    _baseUpdateInnerTaskAssigneeMulti(subIdx, innerIdx, newAssignee);
+};

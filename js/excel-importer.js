@@ -226,8 +226,11 @@ function renderExcelPreviewTable() {
                 <td class="p-2.5">
                     <div class="flex items-center gap-1">
                         <select onchange="updateExcelPreviewItemAssignee(${idx}, this.value)" class="w-full px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-[11px] font-medium focus:outline-none focus:border-indigo-500 cursor-pointer">
-                            ${buildMemberSelectOptionsHTML(it.assignee || '', isCurrentUserAdmin, '👤 Atribuir membro...')}
+                            ${buildMemberSelectOptionsHTML(it.assignee || '', isCurrentUserAdmin, '👤 Atribuir membro...', true)}
                         </select>
+                        <button type="button" onclick="openMultiMemberPickerModal({ mode: 'excel_item', itemIdx: ${idx}, title: 'Membros — Subtarefa #' + '${escapeHtml(it.itemId)}' })" class="px-1.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-600 text-indigo-600 dark:text-indigo-400 hover:text-white border border-indigo-500/25 text-[10px] font-bold transition shrink-0" title="Selecionar mais de um membro para este item">
+                            <i class="fa-solid fa-users"></i>
+                        </button>
                         <div class="inline-flex flex-col rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shrink-0">
                             <button type="button" onclick="moveExcelPreviewItemOrder(${idx}, -1)" ${idx === 0 ? 'disabled' : ''} class="w-3.5 h-3 rounded hover:bg-white dark:hover:bg-slate-700 disabled:opacity-30 text-slate-500 flex items-center justify-center" title="Subir item">
                                 <i class="fa-solid fa-caret-up text-[8px]"></i>
@@ -250,6 +253,15 @@ function renderExcelPreviewTable() {
 
 function updateExcelPreviewItemAssignee(idx, newAssignee) {
     if (!parsedExcelOrder || !parsedExcelOrder.items[idx]) return;
+    if (newAssignee === '__MULTI_PICKER__') {
+        openMultiMemberPickerModal({
+            mode: 'excel_item',
+            itemIdx: idx,
+            title: 'Membros — Subtarefa #' + (parsedExcelOrder.items[idx].itemId || (idx + 1))
+        });
+        renderExcelPreviewTable();
+        return;
+    }
     const item = parsedExcelOrder.items[idx];
     const prevAssignee = (item.assignee || document.getElementById('importDefaultAuthor')?.value || currentAuthor || '').trim();
     const cleanNew = (newAssignee || '').trim();

@@ -89,9 +89,9 @@
 
                     <span class="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
 
-                    <!-- Filtro / Seletor Rápido de Troca de Sala no Cabeçalho -->
+                    <!-- Filtro / Seletor Rápido de Troca de Sala no Cabeçalho + Botão Sala Não Atribuídas -->
                     <div id="headerRoomControlGroup" class="flex items-center gap-1.5 min-w-0">
-                        <!-- Seletor Dropdown Rápido de Sala (Visível para Admin trocar de sala com 1 clique) -->
+                        <!-- Seletor Dropdown Rápido de Sala (Permite alternar entre Sala Pessoal/Geral e Sala de Não Atribuídas) -->
                         <div id="headerAdminRoomWrapper" class="hidden items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/15 border border-indigo-500/25 text-indigo-600 dark:text-indigo-400 transition">
                             <i class="fa-solid fa-door-open text-xs shrink-0"></i>
                             <select id="headerQuickRoomSelect" onchange="handleQuickRoomSwitch(this.value)" class="bg-transparent text-xs font-extrabold uppercase tracking-wider focus:outline-none cursor-pointer max-w-[190px] sm:max-w-[240px] truncate text-indigo-700 dark:text-indigo-300" title="Filtro de Troca Rápida de Sala">
@@ -99,9 +99,16 @@
                             </select>
                         </div>
 
-                        <!-- Botão de Sala Atual (Visível para Membros ou para abrir modal de troca de sala) -->
+                        <!-- Botão Rápido: Sala de Tarefas Não Atribuídas -->
+                        <button type="button" id="headerUnassignedRoomBtn" onclick="toggleUnassignedRoomView()" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] font-extrabold uppercase tracking-wider transition shrink-0" title="Abrir Sala de Tarefas Não Atribuídas (Sem Responsável)">
+                            <i class="fa-solid fa-inbox text-amber-500 text-xs"></i>
+                            <span class="hidden sm:inline">Não Atribuídas</span>
+                            <span id="headerUnassignedCountBadge" class="px-1.5 py-0.2 rounded-full bg-amber-500 text-white text-[9px] font-extrabold leading-tight">0</span>
+                        </button>
+
+                        <!-- Botão de Sala Atual / Trocar Conta -->
                         <button type="button" id="headerRoomBtn" onclick="openRoomAuthModal(true)" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/25 text-indigo-600 dark:text-indigo-400 text-xs font-extrabold uppercase tracking-wider transition" title="Clique para trocar de Sala ou Conta">
-                            <i class="fa-solid fa-door-open text-xs"></i>
+                            <i class="fa-solid fa-user-Astronaut fa-door-open text-xs"></i>
                             <span id="headerRoomBadge" class="truncate max-w-[160px]">SALA GERAL</span>
                             <i class="fa-solid fa-chevron-down text-[9px] opacity-70"></i>
                         </button>
@@ -206,6 +213,9 @@
                             </div>
                             <button onclick="openRoomAuthModal(true)" class="w-full text-left px-4 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 text-slate-700 dark:text-slate-200">
                                 <i class="fa-solid fa-door-open text-indigo-500 w-4"></i> Trocar Sala ou Conta
+                            </button>
+                            <button onclick="openChangePasswordModal()" class="w-full text-left px-4 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 text-slate-700 dark:text-slate-200">
+                                <i class="fa-solid fa-key text-amber-500 w-4"></i> Trocar Minha Senha
                             </button>
                             <button id="menuUserDirBtn" onclick="openUserDirectoryModal()" class="hidden w-full text-left px-4 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 text-slate-700 dark:text-slate-200">
                                 <i class="fa-solid fa-users-gear text-emerald-500 w-4"></i>
@@ -319,11 +329,15 @@
                         <textarea id="taskDescInput" rows="1" placeholder="Observações, loja ou local..." class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs resize-y min-h-[30px] max-h-20"></textarea>
                     </div>
                     <div class="sm:col-span-3">
-                        <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-0.5">Responsável</label>
-                        <select id="taskAuthorInput" class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs font-semibold cursor-pointer">
+                        <div class="flex items-center justify-between mb-0.5">
+                            <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Responsável(is)</label>
+                            <button type="button" onclick="openMultiMemberPickerModal({ mode: 'input_select', selectId: 'taskAuthorInput', title: 'Responsáveis pela Tarefa Principal' })" class="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-0.5" title="Selecionar mais de um membro responsável para esta tarefa">
+                                <i class="fa-solid fa-user-plus text-[9px]"></i> + Membros
+                            </button>
+                        </div>
+                        <select id="taskAuthorInput" onchange="if(this.value==='__MULTI_PICKER__'){ openMultiMemberPickerModal({ mode: 'input_select', selectId: 'taskAuthorInput', title: 'Responsáveis pela Tarefa Principal' }); }" class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs font-semibold cursor-pointer">
                             <option value="">👤 Sem responsável</option>
                         </select>
-                        
                     </div>
                 </div>
 
@@ -392,9 +406,14 @@
                             <input type="number" id="newSubtaskHoursInput" min="0.1" step="0.1" value="2" class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-amber-500 text-xs font-mono font-bold text-center">
                             <span class="text-[10px] font-bold text-slate-400">h</span>
                         </div>
-                        <select id="newSubtaskAssigneeInput" class="sm:w-40 px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs cursor-pointer">
-                            <option value="">👤 Sem membro</option>
-                        </select>
+                        <div class="flex items-center gap-1 sm:w-48 shrink-0">
+                            <select id="newSubtaskAssigneeInput" onchange="if(this.value==='__MULTI_PICKER__'){ openMultiMemberPickerModal({ mode: 'input_select', selectId: 'newSubtaskAssigneeInput', title: 'Membros da Nova Subtarefa' }); }" class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs cursor-pointer">
+                                <option value="">👤 Sem membro</option>
+                            </select>
+                            <button type="button" onclick="openMultiMemberPickerModal({ mode: 'input_select', selectId: 'newSubtaskAssigneeInput', title: 'Membros da Nova Subtarefa' })" class="px-2 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-600 text-indigo-600 dark:text-indigo-400 hover:text-white border border-indigo-500/25 text-xs font-bold transition shrink-0" title="Selecionar mais de um membro para a subtarefa">
+                                <i class="fa-solid fa-users text-[10px]"></i>
+                            </button>
+                        </div>
                         <button type="button" onclick="addSubtaskToModal()" class="px-3 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 font-bold text-xs transition shrink-0">
                             + Adicionar
                         </button>
@@ -480,9 +499,15 @@
                                 <label class="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                                     Senha Pessoal *
                                 </label>
-                                <button type="button" onclick="recoverPasswordViaWhatsApp()" class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1" title="Enviar senha para o WhatsApp cadastrado deste usuário">
-                                    <i class="fa-brands fa-whatsapp text-xs"></i> Esqueceu a senha?
-                                </button>
+                                <div class="flex items-center gap-2">
+                                    <button type="button" onclick="openChangePasswordModal()" class="text-[10px] font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1" title="Abrir janela para alterar sua senha">
+                                        <i class="fa-solid fa-key text-[10px]"></i> Trocar senha
+                                    </button>
+                                    <span class="text-slate-300 dark:text-slate-600">•</span>
+                                    <button type="button" onclick="recoverPasswordViaWhatsApp()" class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1" title="Enviar senha para o WhatsApp cadastrado deste usuário">
+                                        <i class="fa-brands fa-whatsapp text-xs"></i> Esqueceu?
+                                    </button>
+                                </div>
                             </div>
                             <div class="relative">
                                 <input type="password" id="authUserPassInput" placeholder="Sua senha..." class="w-full pl-3 pr-8 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs">
@@ -1088,7 +1113,12 @@
                             <input type="date" id="importDefaultDueDate" class="w-full px-2 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold focus:outline-none focus:border-indigo-500">
                         </div>
                         <div class="sm:col-span-2">
-                            <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 mb-0.5">Responsável</label>
+                            <div class="flex items-center justify-between mb-0.5">
+                                <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400">Responsável(is)</label>
+                                <button type="button" onclick="openMultiMemberPickerModal({ mode: 'excel_default_author', selectId: 'importDefaultAuthor', title: 'Responsáveis pelo Pedido' })" class="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 hover:underline" title="Atribuir mais de um membro ao pedido">
+                                    + Membros
+                                </button>
+                            </div>
                             <select id="importDefaultAuthor" onchange="handleImportDefaultAuthorChange(this.value)" class="w-full px-2 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:border-indigo-500">
                                 <option value="">👤 Sem resp.</option>
                             </select>
@@ -1222,7 +1252,7 @@
                             <span>Central de Avisos & Pendências</span>
                             <span id="notificationsModalUnreadPill" class="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-600 text-white hidden">0 novos</span>
                         </h3>
-                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Avisos automáticos enviados ao responsável da tarefa quando um item entra em Aguardando</p>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Visibilidade restrita: Avisos de tarefas visíveis apenas p/ Responsável da Tarefa, Remetente e Admin • Mensagens Diretas apenas p/ os interessados</p>
                     </div>
                 </div>
                 <button type="button" onclick="closeNotificationsModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center transition">
@@ -1234,16 +1264,19 @@
             <div class="px-5 py-2.5 bg-slate-100/80 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
                 <div class="inline-flex flex-wrap items-center bg-white dark:bg-slate-900 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700 text-[11px] font-bold">
                     <button type="button" id="notifFilterBtn-all" onclick="setNotificationsFilter('all')" class="px-2.5 py-1 rounded-lg transition bg-indigo-600 text-white shadow-sm">
-                        Todos (Por Tarefa)
+                        Todos Visíveis
+                    </button>
+                    <button type="button" id="notifFilterBtn-direct" onclick="setNotificationsFilter('direct')" class="px-2.5 py-1 rounded-lg transition text-slate-600 dark:text-slate-300 hover:text-indigo-500" title="Exibe apenas Mensagens Diretas privadas entre você e outro membro">
+                        ✉️ Mensagens Diretas
                     </button>
                     <button type="button" id="notifFilterBtn-mine" onclick="setNotificationsFilter('mine')" class="px-2.5 py-1 rounded-lg transition text-slate-600 dark:text-slate-300 hover:text-indigo-500" title="Exibe avisos enviados para você e cópias dos avisos criados por você com o mesmo status">
-                        Meus & Criados por Mim
+                        Meus & Enviados
                     </button>
                     <button type="button" id="notifFilterBtn-unread" onclick="setNotificationsFilter('unread')" class="px-2.5 py-1 rounded-lg transition text-slate-600 dark:text-slate-300 hover:text-indigo-500">
                         Não Lidos
                     </button>
                     <button type="button" id="notifFilterBtn-waiting" onclick="setNotificationsFilter('waiting')" class="px-2.5 py-1 rounded-lg transition text-slate-600 dark:text-slate-300 hover:text-indigo-500">
-                        ⏸️ Aguardando Ativos
+                        ⏸️ Aguardando
                     </button>
                 </div>
 
@@ -1265,20 +1298,21 @@
                 </div>
             </div>
 
-            <!-- Formulário Rápido para Enviar Novo Aviso Manual (Vinculado a Tarefa e com Cópia p/ Criador) -->
+            <!-- Formulário Rápido para Enviar Aviso de Tarefa ou Mensagem Direta Privada (Apenas Interessados) -->
             <form onsubmit="handleCreateManualNotification(event)" class="px-5 py-2.5 bg-amber-500/5 border-b border-amber-500/20 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2 shrink-0">
-                <span class="text-[10px] font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-300 shrink-0 flex items-center gap-1">
-                    <i class="fa-solid fa-bullhorn"></i> Novo Aviso:
-                </span>
-                <select id="manualNotifTaskSelect" onchange="handleManualNotifTaskChange(this.value)" class="sm:w-48 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:border-amber-500" title="Vincular aviso a uma tarefa específica">
-                    <option value="">📂 Geral (Sem tarefa)</option>
+                <select id="manualNotifTypeSelect" onchange="handleManualNotifTypeChange(this.value)" class="sm:w-44 px-2.5 py-1.5 rounded-lg bg-amber-500/15 dark:bg-amber-950/50 border border-amber-500/40 text-amber-800 dark:text-amber-200 text-xs font-extrabold cursor-pointer focus:outline-none focus:border-amber-500" title="Escolha entre Aviso de Tarefa (visível p/ Responsável, Remetente e Admin) ou Mensagem Direta Privada (visível APENAS para você e o destinatário)">
+                    <option value="task_alert">📋 Aviso de Tarefa</option>
+                    <option value="direct_message">🔒 Mensagem Direta (Privada)</option>
                 </select>
-                <select id="manualNotifTargetSelect" class="sm:w-40 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:border-amber-500" title="Destinatário do aviso (uma cópia com o mesmo status é mantida para você)">
-                    <option value="">👥 Todos da Equipe</option>
+                <select id="manualNotifTaskSelect" onchange="handleManualNotifTaskChange(this.value)" class="sm:w-44 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:border-amber-500" title="Vincular a uma tarefa específica (opcional em Mensagem Direta)">
+                    <option value="">📂 Sem tarefa vinculada</option>
                 </select>
-                <input type="text" id="manualNotifMessageInput" placeholder="Digite o aviso (mantém cópia sincronizada p/ você)..." class="flex-1 min-w-[180px] px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs focus:outline-none focus:border-amber-500">
+                <select id="manualNotifTargetSelect" class="sm:w-44 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold cursor-pointer focus:outline-none focus:border-amber-500" title="Destinatário (em Mensagem Direta, fica visível exclusivamente para você e o destinatário)">
+                    <option value="">👤 Selecionar Destinatário...</option>
+                </select>
+                <input type="text" id="manualNotifMessageInput" placeholder="Digite a mensagem ou aviso..." class="flex-1 min-w-[180px] px-3 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs focus:outline-none focus:border-amber-500">
                 <button type="submit" class="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm transition shrink-0 flex items-center justify-center gap-1">
-                    <i class="fa-solid fa-paper-plane text-[10px]"></i> Enviar Aviso
+                    <i class="fa-solid fa-paper-plane text-[10px]"></i> Enviar
                 </button>
             </form>
 
@@ -1432,6 +1466,131 @@
                     </button>
                     <button type="submit" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-md shadow-indigo-600/20 transition flex items-center gap-1.5">
                         <i class="fa-solid fa-shield-check"></i> Confirmar com Senha
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+
+    <!-- JANELA / MODAL PARA TROCA DE SENHA DO USUÁRIO -->
+    <div id="changePasswordModal" class="fixed inset-0 z-[80] hidden bg-slate-900/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+        <div class="bg-white dark:bg-darkCard w-full max-w-md rounded-2xl border border-slate-200 dark:border-darkBorder shadow-2xl overflow-hidden">
+            <div class="px-5 py-3.5 bg-amber-500/10 border-b border-amber-500/20 flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-sm">
+                        <i class="fa-solid fa-key text-sm"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-sm sm:text-base font-extrabold text-slate-800 dark:text-slate-100">Trocar Senha de Acesso</h3>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400">Atualize sua senha pessoal sincronizada no Firebase</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeChangePasswordModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <form onsubmit="handleConfirmChangePassword(event)" class="p-5 space-y-3.5 text-xs">
+                <div id="changePasswordAlertBox" class="hidden p-2.5 rounded-xl border font-semibold"></div>
+
+                <div>
+                    <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                        <i class="fa-solid fa-user text-indigo-500 mr-1"></i> Conta / Usuário *
+                    </label>
+                    <select id="changePassUserSelect" class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer">
+                    </select>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">
+                        <i class="fa-solid fa-lock text-slate-400 mr-1"></i> Senha Atual (ou Senha de Administrador) *
+                    </label>
+                    <div class="relative">
+                        <input type="password" id="changePassCurrentInput" required placeholder="Digite sua senha atual..." class="w-full pl-3 pr-9 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-amber-500 font-semibold">
+                        <button type="button" onclick="togglePasswordVisibility('changePassCurrentInput', 'changePassCurrentEye')" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                            <i id="changePassCurrentEye" class="fa-regular fa-eye text-xs"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 border-t border-slate-200/80 dark:border-slate-700/80">
+                    <div>
+                        <label class="block text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 mb-1">
+                            <i class="fa-solid fa-shield-halved mr-1"></i> Nova Senha *
+                        </label>
+                        <div class="relative">
+                            <input type="password" id="changePassNewInput" required minlength="3" placeholder="Mín. 3 caracteres..." class="w-full pl-3 pr-8 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-emerald-500 font-semibold">
+                            <button type="button" onclick="togglePasswordVisibility('changePassNewInput', 'changePassNewEye')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                                <i id="changePassNewEye" class="fa-regular fa-eye text-xs"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 mb-1">
+                            <i class="fa-solid fa-check-double mr-1"></i> Confirmar Nova Senha *
+                        </label>
+                        <div class="relative">
+                            <input type="password" id="changePassConfirmInput" required minlength="3" placeholder="Repita a nova senha..." class="w-full pl-3 pr-8 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-emerald-500 font-semibold">
+                            <button type="button" onclick="togglePasswordVisibility('changePassConfirmInput', 'changePassConfirmEye')" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                                <i id="changePassConfirmEye" class="fa-regular fa-eye text-xs"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                    <button type="button" onclick="closeChangePasswordModal()" class="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                        Cancelar
+                    </button>
+                    <button type="submit" id="changePassSubmitBtn" class="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-extrabold shadow-md shadow-amber-500/20 transition flex items-center gap-1.5">
+                        <i class="fa-solid fa-floppy-disk"></i> Salvar Nova Senha
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+
+    <!-- JANELA / MODAL PARA SELECIONAR MÚLTIPLOS MEMBROS PARA TAREFA OU SUBTAREFA -->
+    <div id="multiMemberPickerModal" class="fixed inset-0 z-[85] hidden bg-slate-900/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fadeIn">
+        <div class="bg-white dark:bg-darkCard w-full max-w-md rounded-2xl border border-slate-200 dark:border-darkBorder shadow-2xl overflow-hidden">
+            <div class="px-5 py-3.5 bg-indigo-500/10 border-b border-indigo-500/20 flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                        <i class="fa-solid fa-users text-sm"></i>
+                    </div>
+                    <div>
+                        <h3 id="multiMemberPickerTitle" class="text-sm sm:text-base font-extrabold text-slate-800 dark:text-slate-100">Atribuir Membros da Equipe</h3>
+                        <p id="multiMemberPickerSubtitle" class="text-[11px] text-slate-500 dark:text-slate-400">Selecione um ou mais integrantes para compartilhar esta atribuição</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeMultiMemberPickerModal()" class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <form onsubmit="handleConfirmMultiMemberPicker(event)" class="p-5 space-y-3.5 text-xs">
+                <div class="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-700">
+                    <span id="multiMemberSelectedCounter" class="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">0 membro(s) selecionado(s)</span>
+                    <div class="flex items-center gap-2 text-[11px]">
+                        <button type="button" onclick="toggleAllMultiMemberCheckboxes(true)" class="text-indigo-500 hover:underline font-semibold">Marcar todos</button>
+                        <span class="text-slate-300 dark:text-slate-600">•</span>
+                        <button type="button" onclick="toggleAllMultiMemberCheckboxes(false)" class="text-rose-500 hover:underline font-semibold">Limpar seleção</button>
+                    </div>
+                </div>
+
+                <div id="multiMemberCheckboxesContainer" class="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                    <!-- Populated via JS -->
+                </div>
+
+                <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                    <button type="button" onclick="closeMultiMemberPickerModal()" class="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                        Cancelar
+                    </button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold shadow-md shadow-indigo-600/20 transition flex items-center gap-1.5">
+                        <i class="fa-solid fa-check-double"></i> Aplicar Membros Selecionados
                     </button>
                 </div>
             </form>

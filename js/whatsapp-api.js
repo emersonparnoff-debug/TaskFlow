@@ -295,23 +295,29 @@ async function notifyAssigneeViaWhatsAppIfEnabled(memberNameOrLogin, itemTitle, 
     if (!cfg.autoNotifyAssign || !memberNameOrLogin) return;
 
     await fetchAllUsersFromCloud();
-    const matchedUser = registeredUsersCache.find(u => doesAssigneeMatchUser(memberNameOrLogin, u));
-    if (!matchedUser || !matchedUser.whatsapp) return;
+    const assignees = typeof parseAssigneesList === 'function'
+        ? parseAssigneesList(memberNameOrLogin)
+        : String(memberNameOrLogin || '').split(/[,;]+/).map(x => x.trim()).filter(Boolean);
 
-    const msg = parentOrderTitle
-        ? `📌 *Nova Subtarefa Atribuída — TaskFlow Engenharia*
+    for (const singleAssignee of assignees) {
+        const matchedUser = registeredUsersCache.find(u => doesAssigneeMatchUser(singleAssignee, u));
+        if (!matchedUser || !matchedUser.whatsapp) continue;
+
+        const msg = parentOrderTitle
+            ? `📌 *Nova Subtarefa Atribuída — TaskFlow Engenharia*
 
 Olá, *${matchedUser.fullName || matchedUser.id}*!
 Você foi definido como responsável pelo item:
 🔹 *${itemTitle}*
 📂 Pedido: *${parentOrderTitle}*`
-        : `📋 *Nova Tarefa Atribuída — TaskFlow Engenharia*
+            : `📋 *Nova Tarefa Atribuída — TaskFlow Engenharia*
 
 Olá, *${matchedUser.fullName || matchedUser.id}*!
 Você foi definido como responsável principal pela tarefa:
 📂 *${itemTitle}*`;
 
-    await dispatchWhatsAppApiMessage(matchedUser.whatsapp, msg);
+        await dispatchWhatsAppApiMessage(matchedUser.whatsapp, msg);
+    }
 }
 
 const _origUpdateCardTaskAssigneeV16 = updateCardTaskAssignee;

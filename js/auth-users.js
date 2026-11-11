@@ -138,18 +138,23 @@ function getAllTeamMembersList() {
         namesMap.set(currentAuthor.toLowerCase(), { name: currentAuthor, subLabel: 'Usuário Atual' });
     }
 
-    (tasks || []).forEach(t => {
-        if (t.author && !namesMap.has(t.author.trim().toLowerCase())) {
-            namesMap.set(t.author.trim().toLowerCase(), { name: t.author.trim(), subLabel: 'Membro Atribuído' });
-        }
-        (t.subtasks || []).forEach(s => {
-            if (s.assignee && !namesMap.has(s.assignee.trim().toLowerCase())) {
-                namesMap.set(s.assignee.trim().toLowerCase(), { name: s.assignee.trim(), subLabel: 'Membro Atribuído' });
+    const addParsedMembersToMap = (rawVal) => {
+        const list = typeof parseAssigneesList === 'function'
+            ? parseAssigneesList(rawVal)
+            : String(rawVal || '').split(/[,;]+/).map(x => x.trim()).filter(Boolean);
+        list.forEach(mName => {
+            if (mName && !namesMap.has(mName.toLowerCase())) {
+                namesMap.set(mName.toLowerCase(), { name: mName, subLabel: 'Membro Atribuído' });
             }
+        });
+    };
+
+    (tasks || []).forEach(t => {
+        if (t.author) addParsedMembersToMap(t.author);
+        (t.subtasks || []).forEach(s => {
+            if (s.assignee) addParsedMembersToMap(s.assignee);
             (s.innerTasks || []).forEach(it => {
-                if (it.assignee && !namesMap.has(it.assignee.trim().toLowerCase())) {
-                    namesMap.set(it.assignee.trim().toLowerCase(), { name: it.assignee.trim(), subLabel: 'Membro Atribuído' });
-                }
+                if (it.assignee) addParsedMembersToMap(it.assignee);
             });
         });
     });
@@ -1404,4 +1409,159 @@ async function adminSetUserPasswordInDirectory(usernameKey, newPlainPassword) {
     await saveUserAccountToCloud(cleanLogin, user);
     await refreshUserDirectoryList();
     showToast(`Senha de "${user.fullName || user.id}" atualizada para "${cleanPass}".`, 'success');
+}
+
+
+// =========================================================================
+// 18. JANELA / MODAL PARA TROCA DE SENHA DO USUÁRIO (#changePasswordModal)
+// =========================================================================
+function showChangePasswordAlert(msg, type = 'error') {
+    const box = document.getElementById('changePasswordAlertBox');
+    if (!box) return;
+    if (!msg) {
+        box.classList.add('hidden');
+        box.innerHTML = '';
+        return;
+    }
+    box.classList.remove('hidden');
+    if (type === 'success') {
+        box.className = 'p-2.5 rounded-xl border font-semibold bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400';
+        box.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i>${escapeHtml(msg)}`;
+    } else {
+        box.className = 'p-2.5 rounded-xl border font-semibold bg-rose-500/10 border-rose-500/30 text-rose-600 dark:text-rose-400';
+        box.innerHTML = `<i class="fa-solid fa-circle-exclamation mr-1"></i>${escapeHtml(msg)}`;
+    }
+}
+
+async function openChangePasswordModal(preselectedLogin = null) {
+    document.getElementById('userProfileDropdownMenu')?.classList.add('hidden');
+    const modal = document.getElementById('changePasswordModal');
+    if (!modal) return;
+
+    showChangePasswordAlert('');
+    const curInp = document.getElementById('changePassCurrentInput');
+    const newInp = document.getElementById('changePassNewInput');
+    const confInp = document.getElementById('changePassConfirmInput');
+    if (curInp) curInp.value = '';
+    if (newInp) newInp.value = '';
+    if (confInp) confInp.value = '';
+
+    await fetchAllUsersFromCloud();
+    const sel = document.getElementById('changePassUserSelect');
+    if (sel) {
+        const targetLogin = normalizeIdentityStr(
+            preselectedLogin ||
+            currentUserLogin ||
+            document.getElementById('authUserSelect')?.value ||
+            ''
+        );
+
+        const activeUsers = registeredUsersCache.filter(u => u.status !== 'pending');
+        if (activeUsers.length === 0) {
+            sel.innerHTML = `<option value="">Nenhuma conta ativa cadastrada</option>`;
+        } else {
+            // Se não for Admin e já estiver logado, mostra apenas a própria conta; se for Admin ou na tela de login, lista as contas
+            const listToShow = (isAuthenticated && !isCurrentUserAdmin && currentUserLogin)
+                ? activeUsers.filter(u => normalizeIdentityStr(u.id) === normalizeIdentityStr(currentUserLogin))
+                : activeUsers;
+
+            sel.innerHTML = listToShow.map(u => {
+                const login = String(u.id).toLowerCase();
+                const isSel = login === targetLogin ? 'selected' : '';
+                return `<option value="${escapeHtml(login)}" ${isSel}>👤 ${escapeHtml(u.fullName || login)} (@${escapeHtml(login)})</option>`;
+            }).join('');
+        }
+    }
+
+    modal.classList.remove('hidden');
+    setTimeout(() => curInp?.focus(), 50);
+}
+
+function closeChangePasswordModal() {
+    document.getElementById('changePasswordModal')?.classList.add('hidden');
+}
+
+async function handleConfirmChangePassword(event) {
+    event.preventDefault();
+    const sel = document.getElementById('changePassUserSelect');
+    const curInp = document.getElementById('changePassCurrentInput');
+    const newInp = document.getElementById('changePassNewInput');
+    const confInp = document.getElementById('changePassConfirmInput');
+    const btn = document.getElementById('changePassSubmitBtn');
+
+    const selectedLogin = normalizeIdentityStr(sel?.value || currentUserLogin);
+    const currentPass = curInp?.value || '';
+    const newPass = (newInp?.value || '').trim();
+    const confirmPass = (confInp?.value || '').trim();
+
+    if (!selectedLogin) {
+        showChangePasswordAlert('Selecione uma conta de usuário válida.', 'error');
+        return;
+    }
+    if (!currentPass) {
+        showChangePasswordAlert('Digite sua senha atual para confirmar.', 'error');
+        return;
+    }
+    if (!newPass || newPass.length < 3) {
+        showChangePasswordAlert('A nova senha deve ter pelo menos 3 caracteres.', 'error');
+        return;
+    }
+    if (newPass !== confirmPass) {
+        showChangePasswordAlert('A confirmação da nova senha não confere!', 'error');
+        return;
+    }
+
+    if (btn) btn.disabled = true;
+    try {
+        await fetchAllUsersFromCloud();
+        const userRecord = registeredUsersCache.find(u => normalizeIdentityStr(u.id) === selectedLogin);
+        if (!userRecord) {
+            showChangePasswordAlert('Usuário não encontrado no banco de dados.', 'error');
+            return;
+        }
+
+        // Verifica se a senha atual informada corresponde à senha do próprio usuário OU à senha de um Administrador ativo
+        const userCurrentHash = await computeSha256Hex(`user::${selectedLogin}::${currentPass}`);
+        let isAuthorized = (userCurrentHash === userRecord.passwordHash);
+
+        if (!isAuthorized) {
+            const admins = registeredUsersCache.filter(u => u.role === 'admin' && u.status !== 'pending');
+            for (const adm of admins) {
+                const admHash = await computeSha256Hex(`user::${String(adm.id).toLowerCase()}::${currentPass}`);
+                if (admHash === adm.passwordHash) {
+                    isAuthorized = true;
+                    break;
+                }
+            }
+        }
+
+        if (!isAuthorized) {
+            showChangePasswordAlert('Senha atual incorreta! Troca de senha não autorizada.', 'error');
+            showToast('Senha atual incorreta!', 'error');
+            return;
+        }
+
+        const newPassHash = await computeSha256Hex(`user::${selectedLogin}::${newPass}`);
+        userRecord.passwordHash = newPassHash;
+        userRecord.recoveryToken = btoa(unescape(encodeURIComponent(newPass)));
+        userRecord.updatedAt = Date.now();
+
+        await saveUserAccountToCloud(selectedLogin, userRecord);
+
+        // Se a janela de login estiver aberta, já preenche a nova senha
+        const authUserPassInp = document.getElementById('authUserPassInput');
+        if (authUserPassInp && !document.getElementById('roomAuthModal')?.classList.contains('hidden')) {
+            authUserPassInp.value = newPass;
+        }
+
+        // Se o diretório de usuários estiver aberto, atualiza a tabela
+        if (!document.getElementById('userDirectoryModal')?.classList.contains('hidden')) {
+            await refreshUserDirectoryList();
+        }
+
+        closeChangePasswordModal();
+        showToast(`Senha de "${userRecord.fullName || selectedLogin}" alterada com sucesso!`, 'success');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }

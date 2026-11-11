@@ -152,19 +152,26 @@
         display: none !important;
     }
 
-    /* Seletor de salas ocupando 100% da largura */
+    /* Seletor de salas + botão Não Atribuídas empilhados e contidos 100% na largura da barra lateral */
     body[data-layout="left"] #headerRoomControlGroup,
     body[data-layout="right"] #headerRoomControlGroup {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 0.45rem !important;
         width: 100% !important;
     }
 
     body[data-layout="left"] #headerRoomBtn,
     body[data-layout="right"] #headerRoomBtn,
     body[data-layout="left"] #headerAdminRoomWrapper,
-    body[data-layout="right"] #headerAdminRoomWrapper {
+    body[data-layout="right"] #headerAdminRoomWrapper,
+    body[data-layout="left"] #headerUnassignedRoomBtn,
+    body[data-layout="right"] #headerUnassignedRoomBtn {
         width: 100% !important;
         justify-content: space-between !important;
         padding: 0.5rem 0.75rem !important;
+        box-sizing: border-box !important;
     }
 
     body[data-layout="left"] #headerRoomBadge,
