@@ -7,8 +7,19 @@ async function initApp() {
     loadTheme();
     if (typeof applyLayout === "function") applyLayout();
     if (typeof applySidebarState === "function") applySidebarState();
-    initFirebase();
-    fetchAllUsersFromCloud();
+
+    // Inicia diretamente sem exibir pergunta de modo Online/Offline ao acessar
+    await confirmStartupConnectionChoice(true);
+}
+
+async function confirmStartupConnectionChoice(wantOnline) {
+    const startupModal = document.getElementById('startupConnectionChoiceModal');
+    if (startupModal) {
+        startupModal.classList.add('hidden');
+    }
+
+    await setOnlineOfflineMode(Boolean(wantOnline), false);
+    await fetchAllUsersFromCloud();
 
     try {
         const rawSession = localStorage.getItem(SESSION_KEY);
@@ -29,14 +40,16 @@ async function initApp() {
                 document.getElementById('roomAuthModal').classList.add('hidden');
                 loadTasksFromLocalCache();
                 renderAll();
-                setupFirestoreRealtimeListener();
-                fetchTasksViaRestFallback(false);
+                if (isOnlineModeEnabled) {
+                    setupFirestoreRealtimeListener();
+                    await fetchTasksViaRestFallback(false);
+                }
                 return;
             }
         }
     } catch (e) {}
 
-    // If no active session, open Room Login Modal
+    // Se não houver sessão ativa, abre o Modal de Login de Sala
     isAuthenticated = false;
     openRoomAuthModal(false);
 }
@@ -104,27 +117,35 @@ function updateDashboardMetrics() {
 
     const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
 
-    document.getElementById('statTotal').textContent = total;
-    document.getElementById('statCompletedLabel').textContent = `${completed} concluída${completed === 1 ? '' : 's'}`;
+    const elTotal = document.getElementById('statTotal');
+    if (elTotal) elTotal.textContent = total;
+    const elComp = document.getElementById('statCompletedLabel');
+    if (elComp) elComp.textContent = `${completed} concluída${completed === 1 ? '' : 's'}`;
     const todoEl = document.getElementById('statStatusTodo');
     if (todoEl) todoEl.textContent = todoCount;
     const inProgEl = document.getElementById('statStatusInProgress');
     if (inProgEl) inProgEl.textContent = inProgressCount;
-    document.getElementById('statToday').textContent = todayPending;
-    document.getElementById('statOverdue').textContent = overdueCount;
-    document.getElementById('statProgressPercent').textContent = `${percent}%`;
-    document.getElementById('statProgressBar').style.width = `${percent}%`;
-    document.getElementById('statSubtasksCounter').textContent = `${doneSub}/${totalSub} subtarefas`;
+    const elToday = document.getElementById('statToday');
+    if (elToday) elToday.textContent = todayPending;
+    const elOverdue = document.getElementById('statOverdue');
+    if (elOverdue) elOverdue.textContent = overdueCount;
+    const elPct = document.getElementById('statProgressPercent');
+    if (elPct) elPct.textContent = `${percent}%`;
+    const elBar = document.getElementById('statProgressBar');
+    if (elBar) elBar.style.width = `${percent}%`;
+    const elSubCnt = document.getElementById('statSubtasksCounter');
+    if (elSubCnt) elSubCnt.textContent = `${doneSub}/${totalSub} subtarefas`;
 }
 
 function getFilteredTasks() {
     const searchVal = (document.getElementById('searchInput')?.value || '').toLowerCase().trim();
     const memberVal = (document.getElementById('memberFilter')?.value || 'all').toLowerCase().trim();
     const priorityVal = document.getElementById('priorityFilter')?.value || 'all';
-    const sortVal = document.getElementById('sortBySelect')?.value || 'dueDate';
+    const sortVal = document.getElementById('sortBySelect')?.value || window._currentSortMode || 'dueDate';
     const showCompleted = document.getElementById('showCompletedToggle')?.checked ?? true;
 
     return tasks.filter(t => {
+        if (t.archived) return false;
         if (!showCompleted && t.status === 'done') return false;
         if (priorityVal !== 'all' && t.priority !== priorityVal) return false;
 
@@ -446,12 +467,16 @@ function renderTaskCardHTML(task) {
                     </div>
 
                     <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
-                        <select onchange="updateTaskStatus('${task.id}', this.value)" ${allowStatus ? '' : 'disabled title="Sem permissão para alterar status"'} class="text-[11px] font-semibold px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 focus:outline-none ${allowStatus ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}">
+                        <select onchange="updateTaskStatus('${task.id}', this.value)" ${allowStatus ? '' : 'disabled title="Sem permissão para alterar status"'} class="text-[11px] font-semibold px-2 py-1 rounded-lg ${task.status === 'waiting' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40' : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'} border focus:outline-none ${allowStatus ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}">
                             <option value="todo" ${task.status === 'todo' ? 'selected' : ''}>📋 A Fazer</option>
                             <option value="in_progress" ${task.status === 'in_progress' ? 'selected' : ''}>⏳ Em And.</option>
+                            <option value="waiting" ${task.status === 'waiting' ? 'selected' : ''}>⏸️ Aguardando</option>
                             <option value="done" ${task.status === 'done' ? 'selected' : ''}>✅ Concluído</option>
                         </select>
-                        <button type="button" onclick="toggleTaskCardCollapse('${task.id}')" class="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-500/15 text-slate-500 dark:text-slate-300 hover:text-indigo-600 flex items-center justify-center border border-slate-200 dark:border-slate-700 transition" title="${isCardExpanded ? 'Recolher tarefa ao cabeçalho' : 'Expandir detalhes e subtarefas'}">
+                        <button type="button" onclick="archiveTask('${task.id}', event)" class="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-500 dark:text-slate-300 hover:text-amber-600 flex items-center justify-center border border-slate-200 dark:border-slate-700 transition" title="Arquivar Tarefa">
+                            <i class="fa-solid fa-box-archive text-[11px]"></i>
+                        </button>
+                        <button type="button" onclick="toggleTaskCardCollapse('${task.id}', event)" class="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-indigo-500/15 text-slate-500 dark:text-slate-300 hover:text-indigo-600 flex items-center justify-center border border-slate-200 dark:border-slate-700 transition" title="${isCardExpanded ? 'Recolher tarefa individualmente' : 'Expandir detalhes e subtarefas'}">
                             <i class="fa-solid ${isCardExpanded ? 'fa-chevron-up' : 'fa-chevron-down'} text-xs"></i>
                         </button>
                     </div>
@@ -463,6 +488,15 @@ function renderTaskCardHTML(task) {
                         ${escapeHtml(task.title)}
                     </h4>
                 </div>
+                ${(task.status === 'waiting' || (task.waiting && task.waitingReason)) ? `
+                    <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', null)" class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/35 text-amber-800 dark:text-amber-200 text-[11px] font-semibold flex items-center justify-between gap-2 cursor-pointer hover:bg-amber-500/25 transition" title="Clique para editar o motivo ou retomar a tarefa">
+                        <span class="flex items-center gap-1.5 min-w-0">
+                            <i class="fa-solid fa-circle-pause text-amber-500 shrink-0"></i>
+                            <span class="truncate"><strong>Aguardando:</strong> ${escapeHtml(task.waitingReason || 'Clique para informar o motivo...')}</span>
+                        </span>
+                        <i class="fa-solid fa-pen text-[9px] opacity-70 shrink-0"></i>
+                    </div>
+                ` : ''}
 
                 <!-- Barra compacta de Responsável + Progresso no Cabeçalho -->
                 <div class="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-0.5">
@@ -503,6 +537,7 @@ function renderTaskCardHTML(task) {
                             </div>
                             <div data-scroll-id="sublist_${task.id}" onscroll="recordContainerScroll(this)" class="space-y-2 max-h-72 overflow-y-auto pr-1 pt-0.5">
                                 ${subtasks.map((sub, sIdx) => {
+                                    if (shouldHideCompletedSubtasks() && sub.completed) return '';
                                     const innerList = Array.isArray(sub.innerTasks) ? sub.innerTasks : [];
                                     const hasInner = innerList.length > 0;
                                     const innerDone = innerList.filter(it => it.completed).length;
@@ -580,6 +615,16 @@ function renderTaskCardHTML(task) {
                                                         <i class="fa-regular fa-calendar-check text-[8px]"></i> Prev: ${subDeadlineInfo.endFormatted}
                                                     </span>
                                                 ` : '')}
+                                                <!-- Botão Aguardando na Subtarefa -->
+                                                <button type="button" onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border transition shrink-0 cursor-pointer ${
+                                                    sub.waiting
+                                                        ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
+                                                        : 'bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-500 dark:text-slate-400 hover:text-amber-600 border-slate-200 dark:border-slate-700'
+                                                }" title="${sub.waiting ? 'Aguardando: ' + escapeHtml(sub.waitingReason || '') + ' (Clique para editar ou retomar)' : 'Marcar subtarefa como Aguardando e informar motivo'}">
+                                                    <i class="fa-solid fa-circle-pause text-[9px]"></i>
+                                                    <span>${sub.waiting ? 'Aguardando' : 'Aguardar'}</span>
+                                                </button>
+
                                                 <!-- Controle Rápido de Horas da Subtarefa -->
                                                 <div class="inline-flex items-center rounded-md ${subExceeds ? 'bg-rose-500/15 border-rose-500/40' : 'bg-amber-500/10 border-amber-500/25'} border px-1 py-0.2 gap-0.5 shrink-0" onclick="event.stopPropagation()" title="Tempo estimado desta subtarefa em horas (8h = 1 dia útil)">
                                                     <button type="button" onclick="adjustCardSubtaskHours('${task.id}', ${sIdx}, -0.5)" ${allowEdit || canChangeThisSubAssignee ? '' : 'disabled'} class="w-3.5 h-3.5 rounded hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold text-[10px] disabled:opacity-40">-</button>
@@ -593,6 +638,12 @@ function renderTaskCardHTML(task) {
                                                     </button>
                                                 ` : ''}
                                             </div>
+                                            ${sub.waiting ? `
+                                                <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="ml-6 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-800 dark:text-amber-200 text-[10px] font-semibold flex items-center justify-between gap-1.5 cursor-pointer hover:bg-amber-500/25 transition" title="Clique para editar a observação ou retomar a subtarefa">
+                                                    <span class="truncate"><i class="fa-solid fa-comment-dots text-amber-500 mr-1"></i><strong>Motivo:</strong> ${escapeHtml(sub.waitingReason || 'Sem observação')}</span>
+                                                    <i class="fa-solid fa-pen text-[8px] opacity-70 shrink-0"></i>
+                                                </div>
+                                            ` : ''}
 
                                             <!-- Lista de Tarefas Internas da Subtarefa (Oculta por padrão, exibida apenas quando pedido) -->
                                             ${hasInner && isInnerVisible ? `
@@ -670,6 +721,9 @@ function renderTaskCardHTML(task) {
                     </div>
 
                     <div class="flex items-center gap-1">
+                        <button type="button" onclick="archiveTask('${task.id}', event)" class="px-2 py-1 rounded-lg hover:bg-amber-500/15 text-slate-600 dark:text-slate-300 hover:text-amber-600 transition flex items-center gap-1 text-[11px] font-medium" title="Arquivar Tarefa">
+                            <i class="fa-solid fa-box-archive text-[10px]"></i> Arquivar
+                        </button>
                         ${allowEdit ? `
                             <button type="button" onclick="openTaskModal('${task.id}')" class="px-2 py-1 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition flex items-center gap-1 text-[11px] font-medium" title="Editar Tarefa">
                                 <i class="fa-solid fa-pen text-[10px]"></i> Editar
@@ -691,7 +745,7 @@ function renderTaskCardHTML(task) {
 
 function renderKanbanView(filteredTasks, containerEl) {
     const todoList = filteredTasks.filter(t => t.status === 'todo');
-    const inProgressList = filteredTasks.filter(t => t.status === 'in_progress');
+    const inProgressList = filteredTasks.filter(t => t.status === 'in_progress' || t.status === 'waiting');
     const doneList = filteredTasks.filter(t => t.status === 'done');
 
     containerEl.innerHTML = `
@@ -797,6 +851,9 @@ function openTaskModal(taskId = null) {
         document.getElementById('taskPriorityInput').value = task.priority || 'media';
         document.getElementById('taskDueDateInput').value = task.dueDate || getLocalDateStr(0);
         document.getElementById('taskStatusInput').value = task.status || 'todo';
+        const waitReasonInp = document.getElementById('taskWaitingReasonInput');
+        if (waitReasonInp) waitReasonInp.value = task.waitingReason || '';
+        handleModalTaskStatusChange(task.status || 'todo');
         const simCheck = document.getElementById('taskSimultaneousInput');
         if (simCheck) simCheck.checked = Boolean(task.simultaneous);
         modalSubtasks = JSON.parse(JSON.stringify(task.subtasks || []));
@@ -812,6 +869,9 @@ function openTaskModal(taskId = null) {
         document.getElementById('taskDueDateInput').value = getLocalDateStr(0);
         
         document.getElementById('taskStatusInput').value = 'todo';
+        const waitReasonInp = document.getElementById('taskWaitingReasonInput');
+        if (waitReasonInp) waitReasonInp.value = '';
+        handleModalTaskStatusChange('todo');
         const simCheck = document.getElementById('taskSimultaneousInput');
         if (simCheck) simCheck.checked = false;
         const macroInp = document.getElementById('taskMacroHoursInput');
@@ -890,6 +950,12 @@ function ensureSubtaskStructure(subtasksList) {
         }
         if (s.assignee === undefined) {
             s.assignee = '';
+        }
+        if (s.waiting === undefined) {
+            s.waiting = false;
+        }
+        if (s.waitingReason === undefined) {
+            s.waitingReason = '';
         }
         if (s.hours === undefined || isNaN(Number(s.hours)) || Number(s.hours) <= 0) {
             s.hours = 2; // Padrão: 2h por subtarefa (4 subtarefas = 1 dia útil de 8h)
@@ -1789,6 +1855,14 @@ function renderModalSubtasks() {
                             <span class="text-[9px] font-bold text-amber-600 dark:text-amber-400">h</span>
                             <button type="button" onclick="adjustModalSubtaskHoursDelta(${sIdx}, 0.5)" class="w-4 h-4 rounded hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold text-xs">+</button>
                         </div>
+                        <button type="button" onclick="toggleModalSubtaskWaiting(${sIdx})" class="px-2 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1 ${
+                            sub.waiting
+                                ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
+                                : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/25'
+                        }" title="Marcar/desmarcar esta subtarefa como Aguardando e informar observação do motivo">
+                            <i class="fa-solid fa-circle-pause text-[10px]"></i>
+                            <span>${sub.waiting ? 'Aguardando' : 'Aguardar'}</span>
+                        </button>
                         <select onchange="updateModalSubtaskAssignee(${sIdx}, this.value)" class="w-36 px-2 py-1 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-medium text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer" title="Membro da equipe responsável por esta subtarefa">
                             ${buildMemberSelectOptionsHTML(sub.assignee || '', isSubOwner, '👤 Atribuir membro...')}
                         </select>
@@ -1805,6 +1879,14 @@ function renderModalSubtasks() {
                         </button>
                     </div>
                 </div>
+                ${sub.waiting ? `
+                    <div class="px-3 py-1.5 bg-amber-500/10 border-t border-amber-500/25 flex items-center gap-2">
+                        <span class="text-[10px] font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-300 shrink-0">
+                            <i class="fa-solid fa-comment-dots mr-1"></i>Motivo (Aguardando):
+                        </span>
+                        <input type="text" value="${escapeHtml(sub.waitingReason || '')}" oninput="updateModalSubtaskWaitingReason(${sIdx}, this.value)" placeholder="Digite a observação para o motivo da espera..." class="flex-1 px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-amber-500/40 text-xs font-medium text-slate-800 dark:text-slate-100 focus:outline-none focus:border-amber-500">
+                    </div>
+                ` : ''}
 
                 <!-- Painel Interno (Oculto por padrão, aberto apenas quando solicitado) -->
                 <div class="${isExpanded ? 'block' : 'hidden'} p-3 border-t border-slate-200/80 dark:border-slate-700/80 space-y-2.5 bg-slate-100/60 dark:bg-slate-900/40">
@@ -1911,6 +1993,14 @@ async function saveTaskForm(event) {
     const priority = document.getElementById('taskPriorityInput').value;
     const dueDate = document.getElementById('taskDueDateInput').value;
     const status = document.getElementById('taskStatusInput').value;
+    const waitingReason = status === 'waiting'
+        ? (document.getElementById('taskWaitingReasonInput')?.value || '').trim()
+        : '';
+    if (status === 'waiting' && !waitingReason) {
+        showToast('Por favor, informe a observação para o motivo de Aguardando.', 'error');
+        document.getElementById('taskWaitingReasonInput')?.focus();
+        return;
+    }
     const simultaneous = Boolean(document.getElementById('taskSimultaneousInput')?.checked);
     const rawMacroHoursVal = parseFloat(document.getElementById('taskMacroHoursInput')?.value);
     const subSumHours = modalSubtasks.reduce((acc, s) => acc + (Number(s.hours) || 2), 0);
@@ -1933,6 +2023,8 @@ async function saveTaskForm(event) {
                 priority,
                 dueDate,
                 status,
+                waiting: status === 'waiting',
+                waitingReason,
                 simultaneous,
                 estimatedHours: finalMacroHours,
                 macroTotalHours: finalMacroHours,
@@ -1961,6 +2053,9 @@ async function saveTaskForm(event) {
         tasks.unshift(taskObj);
     }
 
+    if (taskObj && typeof notifyWaitingChangesFromTaskSave === 'function') {
+        notifyWaitingChangesFromTaskSave(taskObj);
+    }
     closeTaskModal();
     renderAll();
     showToast('Tarefa guardada com sucesso!', 'success');
@@ -1978,7 +2073,15 @@ async function updateTaskStatus(taskId, newStatus) {
     }
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
+
+    if (newStatus === 'waiting') {
+        openWaitingReasonModal(taskId, null);
+        return;
+    }
+
     task.status = newStatus;
+    task.waiting = false;
+    task.waitingReason = '';
     task.updatedAt = Date.now();
     renderAll();
     showToast(`Status atualizado para ${STATUS_META[newStatus]?.label || newStatus}`, 'info');
@@ -2227,27 +2330,41 @@ function updatePomodoroDisplay() {
 const UNIFIED_TASKS_STORAGE_KEY = 'taskflow_pro_unified_tasks_v8';
 const expandedTaskCardsSet = new Set(); // Vazio por padrão = todas as tarefas recolhidas ao cabeçalho!
 
-function toggleTaskCardCollapse(taskId) {
+function toggleTaskCardCollapse(taskId, event = null) {
+    if (event && event.stopPropagation) event.stopPropagation();
     if (expandedTaskCardsSet.has(taskId)) {
         expandedTaskCardsSet.delete(taskId);
     } else {
         expandedTaskCardsSet.add(taskId);
     }
+    activeHighlightedTaskId = taskId;
     renderAll();
 }
 
 function handleTaskHeaderClick(event, taskId) {
-    if (event.target && ['SELECT', 'BUTTON', 'INPUT', 'OPTION'].includes(event.target.tagName)) {
+    if (event && event.target && (['SELECT', 'BUTTON', 'INPUT', 'OPTION'].includes(event.target.tagName) || event.target.closest('button, select, input, label'))) {
         return;
     }
+    if (event && event.stopPropagation) event.stopPropagation();
     toggleTaskCardCollapse(taskId);
 }
 
 const expandedGanttMacroSet = new Set(); // Vazio por padrão = Tarefas Macro recolhidas no Gantt!
 
-function toggleGanttMacroTask(macroKey) {
-    if (expandedGanttMacroSet.has(macroKey)) {
+function toggleGanttMacroTask(macroKey, taskId = null) {
+    const isCurrentlyExpanded = expandedGanttMacroSet.has(macroKey) || (taskId && expandedGanttMacroSet.has(taskId));
+    if (isCurrentlyExpanded) {
         expandedGanttMacroSet.delete(macroKey);
+        if (taskId && expandedGanttMacroSet.has(taskId)) {
+            // Se veio do "Expandir Todas" (que adicionou o taskId genérico), preserva as outras barras abertas e recolhe apenas esta!
+            expandedGanttMacroSet.delete(taskId);
+            document.querySelectorAll('[data-gantt-macro-key]').forEach(el => {
+                const k = el.getAttribute('data-gantt-macro-key');
+                if (k && k !== macroKey) {
+                    expandedGanttMacroSet.add(k);
+                }
+            });
+        }
     } else {
         expandedGanttMacroSet.add(macroKey);
     }
@@ -2365,9 +2482,7 @@ function syncMemberPersonalRooms() {
         });
 }
 
-// Desativado armazenamento local no navegador: opera 100% no Firebase Cloud Firestore
-loadTasksFromLocalCache = function() {};
-saveLocalCacheOnly = function() {};
+// Em modo ONLINE opera 100% no Firebase; em modo OFFLINE mantém os dados localmente até ativar a chave Online
 
 fetchAllRoomsFromCloud = async function() {
     if (db && firebaseConnected) {
@@ -2535,7 +2650,8 @@ populateAuthorsDatalist = function() {
 };
 
 updateDashboardMetrics = function() {
-    const roomTasks = tasks.filter(t => doesTaskAppearInRoom(t, currentWorkspace));
+    if (typeof updateArchivedAndNotificationsBadges === 'function') updateArchivedAndNotificationsBadges();
+    const roomTasks = tasks.filter(t => !t.archived && doesTaskAppearInRoom(t, currentWorkspace));
     const total = roomTasks.length;
     const completed = roomTasks.filter(t => t.status === 'done').length;
     const todoCount = roomTasks.filter(t => t.status === 'todo').length;
@@ -2556,17 +2672,24 @@ updateDashboardMetrics = function() {
 
     const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
 
-    document.getElementById('statTotal').textContent = total;
-    document.getElementById('statCompletedLabel').textContent = `${completed} concluída${completed === 1 ? '' : 's'}`;
+    const elTotal = document.getElementById('statTotal');
+    if (elTotal) elTotal.textContent = total;
+    const elComp = document.getElementById('statCompletedLabel');
+    if (elComp) elComp.textContent = `${completed} concluída${completed === 1 ? '' : 's'}`;
     const todoEl = document.getElementById('statStatusTodo');
     if (todoEl) todoEl.textContent = todoCount;
     const inProgEl = document.getElementById('statStatusInProgress');
     if (inProgEl) inProgEl.textContent = inProgressCount;
-    document.getElementById('statToday').textContent = todayPending;
-    document.getElementById('statOverdue').textContent = overdueCount;
-    document.getElementById('statProgressPercent').textContent = `${percent}%`;
-    document.getElementById('statProgressBar').style.width = `${percent}%`;
-    document.getElementById('statSubtasksCounter').textContent = `${doneSub}/${totalSub} subtarefas`;
+    const elToday = document.getElementById('statToday');
+    if (elToday) elToday.textContent = todayPending;
+    const elOverdue = document.getElementById('statOverdue');
+    if (elOverdue) elOverdue.textContent = overdueCount;
+    const elPct = document.getElementById('statProgressPercent');
+    if (elPct) elPct.textContent = `${percent}%`;
+    const elBar = document.getElementById('statProgressBar');
+    if (elBar) elBar.style.width = `${percent}%`;
+    const elSubCnt = document.getElementById('statSubtasksCounter');
+    if (elSubCnt) elSubCnt.textContent = `${doneSub}/${totalSub} subtarefas`;
 };
 
 const _origGetFilteredTasks = getFilteredTasks;
@@ -2812,6 +2935,7 @@ async function moveTaskOrder(taskId, delta) {
         showToast('Sem permissão para reordenar tarefas.', 'error');
         return;
     }
+    window._currentSortMode = 'manual';
     const sortSelect = document.getElementById('sortBySelect');
     if (sortSelect && sortSelect.value !== 'manual') {
         sortSelect.value = 'manual';
@@ -2863,6 +2987,7 @@ async function handleCardDropReorder(e, targetTaskId) {
     const tgtIdx = tasks.findIndex(t => t.id === targetTaskId);
     if (srcIdx === -1 || tgtIdx === -1) return;
 
+    window._currentSortMode = 'manual';
     const sortSelect = document.getElementById('sortBySelect');
     if (sortSelect && sortSelect.value !== 'manual') {
         sortSelect.value = 'manual';
@@ -3038,35 +3163,16 @@ let activeHighlightedTaskId = null;
 let pendingDeleteAction = null; // { type: 'task' | 'room' | 'clear_room', taskId?: string }
 
 function collapseOtherTasksExcept(targetTaskId) {
-    // Recolhe todas as outras tarefas abertas ao colocar destaque em uma nova tarefa
-    Array.from(expandedTaskCardsSet).forEach(openId => {
-        if (openId !== targetTaskId) {
-            expandedTaskCardsSet.delete(openId);
-        }
-    });
+    // Mantém as tarefas expandidas independentes para permitir recolher/expandir individualmente sem travar
 }
 
 function setActiveHighlightedTask(taskId, event) {
     if (!taskId) return;
     if (activeHighlightedTaskId !== taskId) {
         activeHighlightedTaskId = taskId;
-        collapseOtherTasksExcept(taskId);
         renderAll();
     }
 }
-
-const _origToggleTaskCardCollapseV13 = toggleTaskCardCollapse;
-toggleTaskCardCollapse = function(taskId) {
-    const wasExpanded = expandedTaskCardsSet.has(taskId);
-    activeHighlightedTaskId = taskId;
-    collapseOtherTasksExcept(taskId);
-    if (wasExpanded) {
-        expandedTaskCardsSet.delete(taskId);
-    } else {
-        expandedTaskCardsSet.add(taskId);
-    }
-    renderAll();
-};
 
 
 // Fecha o destaque se o usuário clicar fora de qualquer cartão ou modal
@@ -3088,7 +3194,7 @@ document.addEventListener('click', function(e) {
 
     if (!activeHighlightedTaskId) return;
     const insideCard = e.target.closest('[data-task-card-id]');
-    const insideModal = e.target.closest('#taskModal, #deletePasswordModal, #roomAuthModal, #adminPanelModal, #userDirectoryModal, #excelImportModal, #jsonImportChoiceModal');
+    const insideModal = e.target.closest('#taskModal, #deletePasswordModal, #roomAuthModal, #adminPanelModal, #userDirectoryModal, #excelImportModal, #jsonImportChoiceModal, #notificationsModal, #archivedTasksModal, #waitingReasonModal');
     if (!insideCard && !insideModal) {
         activeHighlightedTaskId = null;
         renderAll();
@@ -3391,12 +3497,16 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
 
                                 <!-- Coluna 5: Seletor Rápido de Status + Editar/Excluir -->
                                 <div class="md:col-span-2 flex items-center justify-end gap-1.5" onclick="event.stopPropagation()">
-                                    <select onchange="updateTaskStatus('${task.id}', this.value)" ${allowStatus ? '' : 'disabled'} class="text-[11px] font-semibold px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer">
+                                    <select onchange="updateTaskStatus('${task.id}', this.value)" ${allowStatus ? '' : 'disabled'} class="text-[11px] font-semibold px-2 py-1 rounded-lg ${task.status === 'waiting' ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/40' : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300'} border focus:outline-none cursor-pointer">
                                         <option value="todo" ${task.status === 'todo' ? 'selected' : ''}>📋 A Fazer</option>
                                         <option value="in_progress" ${task.status === 'in_progress' ? 'selected' : ''}>⏳ Em And.</option>
+                                        <option value="waiting" ${task.status === 'waiting' ? 'selected' : ''}>⏸️ Aguardando</option>
                                         <option value="done" ${task.status === 'done' ? 'selected' : ''}>✅ Concluído</option>
                                     </select>
 
+                                    <button type="button" onclick="archiveTask('${task.id}', event)" class="p-1.5 rounded-lg hover:bg-amber-500/15 text-slate-500 hover:text-amber-600 transition" title="Arquivar Tarefa">
+                                        <i class="fa-solid fa-box-archive text-[11px]"></i>
+                                    </button>
                                     ${allowEdit ? `
                                         <button type="button" onclick="openTaskModal('${task.id}')" class="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500 hover:text-indigo-600 transition" title="Editar Tarefa">
                                             <i class="fa-solid fa-pen text-[11px]"></i>
@@ -3417,6 +3527,7 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                                 ` : `
                                     <div data-scroll-id="sublist_simple_${task.id}" onscroll="recordContainerScroll(this)" class="divide-y divide-slate-200/60 dark:divide-slate-800/70 max-h-60 overflow-y-auto pr-1">
                                         ${subtasks.map((sub, sIdx) => {
+                                            if (shouldHideCompletedSubtasks() && sub.completed) return '';
                                             const isAssignedToMe = doesAssigneeMatchUser(sub.assignee, currentAuthor, currentUserLogin);
                                             const canChangeThisSubAssignee = canReassignAnySubtask || isAssignedToMe || !sub.assignee;
 
@@ -3425,8 +3536,16 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                                                     <div class="flex items-center gap-2 min-w-0 flex-1">
                                                         <input type="checkbox" ${sub.completed ? 'checked' : ''} ${allowSubtasks ? '' : 'disabled'} onchange="toggleSubtaskStatus('${task.id}', ${sIdx})" class="rounded text-indigo-600 w-3.5 h-3.5 cursor-pointer shrink-0">
                                                         <span class="truncate font-medium text-slate-700 dark:text-slate-200 ${sub.completed ? 'line-through opacity-55' : ''}" title="${escapeHtml(sub.text)}">${escapeHtml(sub.text)}</span>
+                                                        ${sub.waiting ? `
+                                                            <span onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/35 text-amber-700 dark:text-amber-300 text-[10px] font-bold cursor-pointer truncate max-w-[220px]" title="Aguardando: ${escapeHtml(sub.waitingReason || '')} (Clique para editar)">
+                                                                <i class="fa-solid fa-circle-pause text-[9px]"></i> ${escapeHtml(sub.waitingReason || 'Aguardando')}
+                                                            </span>
+                                                        ` : ''}
                                                     </div>
                                                     <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
+                                                        <button type="button" onclick="openWaitingReasonModal('${task.id}', ${sIdx})" class="px-1.5 py-0.5 rounded text-[10px] font-bold border transition ${sub.waiting ? 'bg-amber-500 text-white border-amber-600' : 'bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-500 hover:text-amber-600 border-slate-200 dark:border-slate-700'}" title="${sub.waiting ? 'Editar motivo de Aguardando / Retomar' : 'Colocar em Aguardando e informar motivo'}">
+                                                            <i class="fa-solid fa-circle-pause text-[9px]"></i>
+                                                        </button>
                                                         <div class="inline-flex items-center rounded bg-amber-500/10 border border-amber-500/25 px-1 py-0.5 gap-0.5" title="Horas da subtarefa">
                                                             <button type="button" onclick="adjustCardSubtaskHours('${task.id}', ${sIdx}, -0.5)" class="w-3.5 h-3.5 rounded hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold text-[10px]">-</button>
                                                             <input type="number" min="0.1" step="0.1" value="${Number(sub.hours || 2)}" onchange="updateCardSubtaskHours('${task.id}', ${sIdx}, this.value)" class="w-10 bg-transparent text-center font-mono font-bold text-[10px] text-amber-700 dark:text-amber-300 focus:outline-none">
@@ -4331,6 +4450,8 @@ function renderGanttView(filteredTasks, containerEl) {
                     itemTitle: sub.text,
                     hours: Math.max(0.1, Number(sub.hours) || 2),
                     completed: Boolean(sub.completed || task.status === 'done'),
+                    waiting: Boolean(sub.waiting) && !sub.completed && task.status !== 'done',
+                    waitingReason: sub.waitingReason || '',
                     priority: task.priority || 'media',
                     dueDate: task.dueDate,
                     baseStartMs: taskStartDayMs
@@ -4579,114 +4700,100 @@ function renderGanttView(filteredTasks, containerEl) {
 
     let html = `
         <div class="bg-white dark:bg-darkCard rounded-2xl border border-slate-200 dark:border-darkBorder shadow-sm p-3 sm:p-4 space-y-2.5 w-full overflow-hidden">
-            <!-- Barra Superior: Resumo de Capacidade (8h Diárias), Configurar Jornada e Ações -->
-            <div class="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
-                <div class="flex flex-wrap items-center gap-1.5">
-                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-xs font-bold">
-                        <i class="fa-solid fa-chart-gantt"></i> Timeline (8h/dia)
-                    </span>
-                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 text-xs font-bold">
-                        <i class="fa-regular fa-clock"></i> Carga: ${formatTotalHours1Dec(totalSystemHours)}h (${(totalSystemHours / DAILY_WORK_HOURS).toFixed(1)}d úteis)
-                    </span>
-                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/25 text-xs font-bold" title="Horário atual representado pela linha vermelha vertical na Timeline">
-                        <span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                        <span>Agora: ${nowMetrics.dateTimeLabel}</span>
-                    </span>
-                    <span class="text-[11px] text-slate-500 dark:text-slate-400 hidden 2xl:inline">
-                        <i class="fa-regular fa-square-check text-indigo-500 mr-1"></i>Clique no <strong>checkbox do dia ou da semana</strong> abaixo para ativar/desativar trabalho ou <strong>Hora Extra</strong>.
-                    </span>
-                </div>
-                <div class="flex flex-wrap items-center gap-1.5">
-                    <!-- Botão Ajustar para Caber na Tela -->
-                    <button type="button" onclick="toggleGanttFitToScreen()" class="px-2.5 py-1.5 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 ${
-                        ganttFitToScreen
-                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-200'
-                    }" title="Ajustar automaticamente a largura das colunas para que todo o período caiba na tela sem rolagem horizontal">
-                        <i class="fa-solid ${ganttFitToScreen ? 'fa-compress' : 'fa-expand'} text-[10px]"></i>
-                        <span>${ganttFitToScreen ? 'Cabendo na Tela' : 'Largura Expandida'}</span>
-                    </button>
-
-                    <!-- Seletor de Agrupamento de Datas (Automático / Dias / Semanas do Mês) -->
-                    <div class="inline-flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700 text-[11px] font-bold">
-                        <button type="button" onclick="setGanttScaleMode('auto')" class="px-2 py-1 rounded-lg transition ${ganttScaleMode === 'auto' ? 'bg-white dark:bg-darkCard text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}" title="Modo Automático: exibe Dias até 15d e agrupa em Semanas do Mês para 21d, 30d, 60d e 90d">
-                            Auto
-                        </button>
-                        <button type="button" onclick="setGanttScaleMode('days')" class="px-2 py-1 rounded-lg transition ${ganttScaleMode === 'days' ? 'bg-white dark:bg-darkCard text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}" title="Exibir todas as datas individualmente dia a dia">
-                            Dias
-                        </button>
-                        <button type="button" onclick="setGanttScaleMode('weeks')" class="px-2 py-1 rounded-lg transition ${ganttScaleMode === 'weeks' ? 'bg-white dark:bg-darkCard text-indigo-600 dark:text-indigo-400 shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}" title="Agrupar cabeçalho por Semanas do Mês (1ª Sem, 2ª Sem, 3ª Sem, 4ª Sem...)">
-                            Semanas do Mês
-                        </button>
+            <!-- PAINEL DE CONTROLE UNIFICADO E ORGANIZADO DA TIMELINE / GANTT -->
+            <div class="p-2.5 rounded-xl bg-slate-100/80 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/70 space-y-2 text-xs">
+                <!-- Linha 1: Indicadores de Capacidade (Esquerda) | Controles de Escala e Jornada (Direita) -->
+                <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-700/70">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-[11px] font-bold">
+                            <i class="fa-solid fa-chart-gantt"></i> Timeline (8h/dia)
+                        </span>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 text-[11px] font-bold">
+                            <i class="fa-regular fa-clock"></i> Carga: ${formatTotalHours1Dec(totalSystemHours)}h (${(totalSystemHours / DAILY_WORK_HOURS).toFixed(1)}d úteis)
+                        </span>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/25 text-[11px] font-bold" title="Horário atual representado pela linha vermelha vertical na Timeline">
+                            <span class="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+                            <span>Agora: ${nowMetrics.dateTimeLabel}</span>
+                        </span>
                     </div>
 
-                    <button type="button" onclick="openWorkSettingsModal()" class="px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold border border-slate-200 dark:border-slate-700 transition flex items-center gap-1.5" title="Configurar dias úteis padrão, feriados e horas extras">
-                        <i class="fa-solid fa-gear text-indigo-500"></i> <span class="hidden sm:inline">Jornada & Feriados</span>
-                    </button>
-                    <button type="button" onclick="expandOrCollapseAllTasks(true)" class="px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold border border-slate-200 dark:border-slate-700 transition flex items-center gap-1" title="Expandir subtarefas de todas as tarefas">
-                        <i class="fa-solid fa-angles-down text-indigo-500 text-[10px]"></i> <span class="hidden md:inline">Expandir</span>
-                    </button>
-                    <button type="button" onclick="expandOrCollapseAllTasks(false)" class="px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold border border-slate-200 dark:border-slate-700 transition flex items-center gap-1" title="Recolher para tarefas macro">
-                        <i class="fa-solid fa-angles-up text-slate-400 text-[10px]"></i> <span class="hidden md:inline">Recolher</span>
-                    </button>
-                    <button type="button" onclick="autoBalanceTeamSubtasksAndHours()" class="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-sm transition flex items-center gap-1.5">
-                        <i class="fa-solid fa-people-arrows"></i> <span class="hidden sm:inline">Balancear Equipe</span>
-                    </button>
-                </div>
-            </div>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <!-- Botão Ajustar para Caber na Tela -->
+                        <button type="button" onclick="toggleGanttFitToScreen()" class="px-2.5 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1.5 ${
+                            ganttFitToScreen
+                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+                                : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-50'
+                        }" title="Ajustar automaticamente a largura das colunas para que todo o período caiba na tela sem rolagem horizontal">
+                            <i class="fa-solid ${ganttFitToScreen ? 'fa-compress' : 'fa-expand'} text-[10px]"></i>
+                            <span>${ganttFitToScreen ? 'Cabendo na Tela' : 'Largura Expandida'}</span>
+                        </button>
 
-            <!-- BARRA DE MOVIMENTAÇÃO TEMPORAL (VISUALIZAR DATAS PASSADAS, HOJE E DATAS FUTURAS) -->
-            <div class="p-2.5 rounded-xl bg-slate-100/80 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/70 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <!-- Botões de Navegação Rápida (Passado / Hoje / Futuro) -->
-                <div class="flex flex-wrap items-center gap-1 shrink-0">
-                    <button type="button" onclick="shiftGanttTimelineDays(-7)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Voltar 7 dias (Datas Passadas)">
-                        <i class="fa-solid fa-angles-left text-[10px] text-indigo-500"></i> -7d
-                    </button>
-                    <button type="button" onclick="shiftGanttTimelineDays(-1)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Voltar 1 dia">
-                        <i class="fa-solid fa-angle-left text-[10px] text-indigo-500"></i> -1d
-                    </button>
-                    <button type="button" onclick="resetGanttTimelineToToday()" class="px-2.5 py-1 rounded-lg ${ganttDayOffset === 0 ? 'bg-rose-600 text-white border-rose-600' : 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 border-rose-500/30 hover:bg-rose-500/10'} border font-extrabold transition flex items-center gap-1 shadow-sm" title="Centralizar no Dia e Horário Atual">
-                        <i class="fa-solid fa-location-crosshairs text-[10px]"></i> Hoje
-                    </button>
-                    <button type="button" onclick="shiftGanttTimelineDays(1)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Avançar 1 dia">
-                        +1d <i class="fa-solid fa-angle-right text-[10px] text-indigo-500"></i>
-                    </button>
-                    <button type="button" onclick="shiftGanttTimelineDays(7)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Avançar 7 dias (Datas Futuras)">
-                        +7d <i class="fa-solid fa-angles-right text-[10px] text-indigo-500"></i>
-                    </button>
-                </div>
-
-                <!-- Controle Deslizante (Barra de Movimentação Contínua Passado <-> Futuro) -->
-                <div class="flex-1 min-w-[140px] flex items-center gap-2 px-1">
-                    <span class="text-[10px] font-bold uppercase text-slate-400 shrink-0"><i class="fa-solid fa-clock-rotate-left mr-1"></i>Passado</span>
-                    <input type="range" min="-90" max="90" step="1" value="${ganttDayOffset}" oninput="setGanttTimelineOffsetSlider(this.value)" class="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-600" title="Arraste para mover a linha do tempo entre datas passadas (-90 dias) e futuras (+90 dias)">
-                    <span class="text-[10px] font-bold uppercase text-slate-400 shrink-0">Futuro<i class="fa-solid fa-forward ml-1"></i></span>
-                </div>
-
-                <!-- Botões Rápidos (15d, 30d, 60d, 90d) + Seletor Direto de Data Inicial e Escala de Dias Visíveis -->
-                <div class="flex flex-wrap items-center gap-1.5 shrink-0">
-                    <div class="inline-flex items-center bg-white dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700" title="Alternar rapidamente a janela de visualização para 15, 30, 60 ou 90 dias">
-                        ${[15, 30, 60, 90].map(dOpt => `
-                            <button type="button" onclick="setGanttTimelineWindowDays(${dOpt})" class="px-2 py-0.5 rounded-md text-[10px] font-extrabold transition ${totalTimelineDays === dOpt ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}">
-                                ${dOpt}d
+                        <!-- Seletor de Agrupamento de Datas (Automático / Dias / Semanas do Mês) -->
+                        <div class="inline-flex items-center bg-white dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-bold">
+                            <button type="button" onclick="setGanttScaleMode('auto')" class="px-2 py-0.5 rounded-md transition ${ganttScaleMode === 'auto' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}" title="Modo Automático: exibe Dias até 15d e agrupa em Semanas do Mês para 21d, 30d, 60d e 90d">
+                                Auto
                             </button>
-                        `).join('')}
+                            <button type="button" onclick="setGanttScaleMode('days')" class="px-2 py-0.5 rounded-md transition ${ganttScaleMode === 'days' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}" title="Exibir todas as datas individualmente dia a dia">
+                                Dias
+                            </button>
+                            <button type="button" onclick="setGanttScaleMode('weeks')" class="px-2 py-0.5 rounded-md transition ${ganttScaleMode === 'weeks' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'}" title="Agrupar cabeçalho por Semanas do Mês (1ª Sem, 2ª Sem, 3ª Sem, 4ª Sem...)">
+                                Semanas do Mês
+                            </button>
+                        </div>
+
+                        <button type="button" onclick="openWorkSettingsModal()" class="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 transition flex items-center gap-1.5 shadow-sm" title="Configurar dias úteis padrão, feriados e horas extras">
+                            <i class="fa-solid fa-gear text-indigo-500"></i> <span>Jornada & Feriados</span>
+                        </button>
+
+                        <!-- Expandir / Recolher Compacto -->
+                        <div class="inline-flex items-center bg-white dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                            <button type="button" onclick="expandOrCollapseAllTasks(true)" class="px-2 py-0.5 rounded-md text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center gap-1" title="Expandir subtarefas de todas as tarefas">
+                                <i class="fa-solid fa-angles-down text-indigo-500 text-[10px]"></i> <span class="hidden xl:inline">Expandir</span>
+                            </button>
+                            <button type="button" onclick="expandOrCollapseAllTasks(false)" class="px-2 py-0.5 rounded-md text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center gap-1" title="Recolher para tarefas macro">
+                                <i class="fa-solid fa-angles-up text-slate-400 text-[10px]"></i> <span class="hidden xl:inline">Recolher</span>
+                            </button>
+                        </div>
                     </div>
-                    <div class="hidden sm:inline-flex items-center gap-1 bg-white dark:bg-slate-900 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-700" title="Período exibido atualmente na Timeline">
-                        <i class="fa-regular fa-calendar-days text-indigo-500 text-[10px]"></i>
-                        <span class="font-bold text-slate-700 dark:text-slate-200 text-[10px]">${rangeStartLabel} até ${rangeEndLabel}</span>
+                </div>
+
+                <!-- Linha 2: Navegação Rápida de Datas (Esquerda) | Período Ativo, Data Inicial e Janela (Direita) -->
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex flex-wrap items-center gap-1 shrink-0">
+                        <button type="button" onclick="shiftGanttTimelineDays(-7)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Voltar 7 dias (Datas Passadas)">
+                            <i class="fa-solid fa-angles-left text-[10px] text-indigo-500"></i> -7d
+                        </button>
+                        <button type="button" onclick="shiftGanttTimelineDays(-1)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Voltar 1 dia">
+                            <i class="fa-solid fa-angle-left text-[10px] text-indigo-500"></i> -1d
+                        </button>
+                        <button type="button" onclick="resetGanttTimelineToToday()" class="px-2.5 py-1 rounded-lg ${ganttDayOffset === 0 ? 'bg-rose-600 text-white border-rose-600' : 'bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 border-rose-500/30 hover:bg-rose-500/10'} border font-extrabold transition flex items-center gap-1 shadow-sm" title="Centralizar no Dia e Horário Atual">
+                            <i class="fa-solid fa-location-crosshairs text-[10px]"></i> Hoje
+                        </button>
+                        <button type="button" onclick="shiftGanttTimelineDays(1)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Avançar 1 dia">
+                            +1d <i class="fa-solid fa-angle-right text-[10px] text-indigo-500"></i>
+                        </button>
+                        <button type="button" onclick="shiftGanttTimelineDays(7)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-bold transition flex items-center gap-1 shadow-sm" title="Avançar 7 dias (Datas Futuras)">
+                            +7d <i class="fa-solid fa-angles-right text-[10px] text-indigo-500"></i>
+                        </button>
                     </div>
-                    <input type="date" value="${viewStartDateInputVal}" onchange="jumpGanttTimelineToDate(this.value)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none focus:border-indigo-500" title="Ir diretamente para uma data específica">
-                    <select onchange="setGanttTimelineWindowDays(this.value)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none focus:border-indigo-500" title="Quantidade de dias visíveis na janela da Timeline">
-                        <option value="7" ${totalTimelineDays === 7 ? 'selected' : ''}>🔭 7 dias</option>
-                        <option value="10" ${totalTimelineDays === 10 ? 'selected' : ''}>🔭 10 dias</option>
-                        <option value="14" ${totalTimelineDays === 14 ? 'selected' : ''}>🔭 14 dias</option>
-                        <option value="15" ${totalTimelineDays === 15 ? 'selected' : ''}>🔭 15 dias</option>
-                        <option value="21" ${totalTimelineDays === 21 ? 'selected' : ''}>🔭 21 dias (Semanas)</option>
-                        <option value="30" ${totalTimelineDays === 30 ? 'selected' : ''}>🔭 30 dias (Semanas)</option>
-                        <option value="60" ${totalTimelineDays === 60 ? 'selected' : ''}>🔭 60 dias (Semanas)</option>
-                        <option value="90" ${totalTimelineDays === 90 ? 'selected' : ''}>🔭 90 dias (Semanas)</option>
-                    </select>
+
+                    <div class="flex flex-wrap items-center gap-1.5 shrink-0">
+                        <div class="hidden sm:inline-flex items-center gap-1.5 bg-white dark:bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700" title="Período exibido atualmente na Timeline">
+                            <i class="fa-regular fa-calendar-days text-indigo-500 text-[10px]"></i>
+                            <span class="font-bold text-slate-700 dark:text-slate-200 text-[11px]">${rangeStartLabel} até ${rangeEndLabel}</span>
+                        </div>
+                        <input type="date" value="${viewStartDateInputVal}" onchange="jumpGanttTimelineToDate(this.value)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none focus:border-indigo-500" title="Ir diretamente para uma data específica">
+                        <select onchange="setGanttTimelineWindowDays(this.value)" class="px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer focus:outline-none focus:border-indigo-500" title="Quantidade de dias visíveis na janela da Timeline">
+                            <option value="7" ${totalTimelineDays === 7 ? 'selected' : ''}>🔭 7 dias</option>
+                            <option value="10" ${totalTimelineDays === 10 ? 'selected' : ''}>🔭 10 dias</option>
+                            <option value="14" ${totalTimelineDays === 14 ? 'selected' : ''}>🔭 14 dias</option>
+                            <option value="15" ${totalTimelineDays === 15 ? 'selected' : ''}>🔭 15 dias</option>
+                            <option value="21" ${totalTimelineDays === 21 ? 'selected' : ''}>🔭 21 dias (Semanas)</option>
+                            <option value="30" ${totalTimelineDays === 30 ? 'selected' : ''}>🔭 30 dias (Semanas)</option>
+                            <option value="60" ${totalTimelineDays === 60 ? 'selected' : ''}>🔭 60 dias (Semanas)</option>
+                            <option value="90" ${totalTimelineDays === 90 ? 'selected' : ''}>🔭 90 dias (Semanas)</option>
+                        </select>
+                    </div>
                 </div>
             </div>
 
@@ -4823,7 +4930,10 @@ function renderGanttView(filteredTasks, containerEl) {
 
         const visibleRows = [];
         macros.forEach(macro => {
-            const isExpanded = expandedGanttMacroSet.has(macro.macroKey) || expandedGanttMacroSet.has(macro.taskId);
+            if (expandedGanttMacroSet.has(macro.taskId)) {
+                expandedGanttMacroSet.add(macro.macroKey);
+            }
+            const isExpanded = expandedGanttMacroSet.has(macro.macroKey);
             visibleRows.push({
                 rowType: 'macro',
                 macro,
@@ -4831,6 +4941,7 @@ function renderGanttView(filteredTasks, containerEl) {
             });
             if (isExpanded && macro.hasSubtasks) {
                 macro.scheduledSubs.forEach(subItem => {
+                    if (shouldHideCompletedSubtasks() && subItem.completed) return;
                     visibleRows.push({
                         rowType: 'subtask',
                         macro,
@@ -4921,7 +5032,7 @@ function renderGanttView(filteredTasks, containerEl) {
                 const isVeryNarrowBar = widthPct < 10;
 
                 html += `
-                    <div onclick="toggleGanttMacroTask('${safeKey}')"
+                    <div data-gantt-macro-key="${safeKey}" onclick="toggleGanttMacroTask('${safeKey}', '${macro.taskId}')"
                          class="absolute h-7 rounded-xl shadow-md ${macroBg} text-white flex items-center justify-between gap-1 px-2 text-[11px] font-bold cursor-pointer select-none transition-all hover:shadow-lg z-10 overflow-hidden border ${macro.exceedingSubCount > 0 ? 'border-rose-300 ring-2 ring-rose-500/70' : 'border-white/20'}"
                          style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; top: ${topPx}px;"
                          title="Tarefa Principal: ${escapeHtml(macro.taskTitle)} | Criada em: ${macro.createdFullLabel} | Vencimento: ${macro.dueFullLabel} | Carga das Subtarefas: ${macro.totalHours}h (${macro.durationDays}d de 8h)${macro.exceedingSubCount > 0 ? ' | ATENÇÃO: ' + macro.exceedingSubCount + ' subtarefa(s) excedem a data de vencimento!' : ''}">
@@ -4967,6 +5078,9 @@ function renderGanttView(filteredTasks, containerEl) {
                                 <span class="px-1.5 py-0.2 rounded bg-black/25 font-mono text-[10px] font-extrabold" title="Soma das horas das subtarefas">
                                     ${macro.totalHours}h
                                 </span>
+                                <button type="button" onclick="event.stopPropagation(); archiveTask('${macro.taskId}', event)" class="w-4 h-4 rounded hover:bg-white/20 flex items-center justify-center text-[9px]" title="Arquivar Tarefa Principal">
+                                    <i class="fa-solid fa-box-archive"></i>
+                                </button>
                                 <button type="button" onclick="event.stopPropagation(); openTaskModal('${macro.taskId}')" class="w-4 h-4 rounded hover:bg-white/20 flex items-center justify-center text-[9px]" title="Editar Tarefa Principal">
                                     <i class="fa-solid fa-pen"></i>
                                 </button>
@@ -4995,6 +5109,9 @@ function renderGanttView(filteredTasks, containerEl) {
                 if (item.completed) {
                     subBarBg = 'bg-emerald-600 hover:bg-emerald-500 border-l-4 border-l-emerald-200';
                     extPillBorder = 'border-emerald-500/35 bg-emerald-500/10 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200';
+                } else if (item.waiting) {
+                    subBarBg = 'bg-amber-500 hover:bg-amber-400 border-l-4 border-l-amber-900 ring-1 ring-amber-400';
+                    extPillBorder = 'border-amber-500/60 bg-amber-500/15 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 ring-1 ring-amber-500/30';
                 } else if (item.exceedsDeadline) {
                     subBarBg = 'bg-rose-600 hover:bg-rose-500 border-l-4 border-l-amber-300 ring-1 ring-rose-400';
                     extPillBorder = 'border-rose-500/45 bg-rose-500/10 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200';
@@ -5003,12 +5120,13 @@ function renderGanttView(filteredTasks, containerEl) {
                 const adjustMinusCall = `adjustCardSubtaskHours('${item.taskId}', ${item.subIdx}, -0.5)`;
                 const adjustPlusCall  = `adjustCardSubtaskHours('${item.taskId}', ${item.subIdx}, 0.5)`;
                 const toggleDoneCall  = `toggleSubtaskStatus('${item.taskId}', ${item.subIdx})`;
+                const waitingModalCall = `openWaitingReasonModal('${item.taskId}', ${item.subIdx})`;
 
                 // Se a barra tiver largura suficiente (>= 24% da linha do tempo), renderiza texto e controles dentro da barra.
                 // Se a barra for curta (< 24%), mantém a barra na largura exata da sua duração e exibe o rótulo legível ao lado!
                 const canFitInsideBar = widthPct >= 24;
                 const placeLabelOnLeft = !canFitInsideBar && (leftPct + widthPct > 65);
-                const tooltipSub = `Subtarefa: ${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
+                const tooltipSub = `Subtarefa: ${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
 
                 if (canFitInsideBar) {
                     html += `
@@ -5022,6 +5140,10 @@ function renderGanttView(filteredTasks, containerEl) {
                             </div>
 
                             <div class="flex items-center gap-1 shrink-0" onclick="event.stopPropagation()">
+                                <button type="button" onclick="${waitingModalCall}" class="px-1.5 py-0.2 rounded ${item.waiting ? 'bg-slate-900/80 text-amber-300' : 'bg-black/25 hover:bg-black/40 text-white'} font-extrabold text-[8px] flex items-center gap-1 max-w-[140px] truncate" title="${item.waiting ? 'Aguardando: ' + escapeHtml(item.waitingReason) + ' (Clique p/ editar ou retomar)' : 'Colocar em Aguardando e informar observação do motivo'}">
+                                    <i class="fa-solid fa-circle-pause text-[8px]"></i>
+                                    <span class="truncate">${item.waiting ? escapeHtml(item.waitingReason || 'Aguardando') : 'Aguardar'}</span>
+                                </button>
                                 ${item.exceedsDeadline ? `
                                     <span class="px-1 py-0.2 rounded bg-amber-400 text-slate-900 font-extrabold text-[8px]" title="Ultrapassa o vencimento em ${item.endFormatted}">
                                         ⚠️${item.endFormatted}
@@ -5046,7 +5168,7 @@ function renderGanttView(filteredTasks, containerEl) {
                         </div>
 
                         <!-- Rótulo externo completo e interativo da Subtarefa (sempre visível e legível ao lado da barra!) -->
-                        <div class="absolute h-6 flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[340px] sm:max-w-[440px] ${extPillBorder}"
+                        <div class="absolute h-6 flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[420px] sm:max-w-[560px] ${extPillBorder}"
                              style="${placeLabelOnLeft ? `right: ${(100 - leftPct + 0.5).toFixed(3)}%;` : `left: ${(leftPct + widthPct + 0.5).toFixed(3)}%;`} top: ${topPx + 2}px;"
                              title="${escapeHtml(tooltipSub)}">
                             
@@ -5063,6 +5185,19 @@ function renderGanttView(filteredTasks, containerEl) {
                                         class="px-1 py-0.2 rounded bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-[9px] font-bold text-indigo-600 dark:text-indigo-300 cursor-pointer max-w-[82px] truncate shrink-0">
                                     ${buildMemberSelectOptionsHTML(user, true, '👤 Membro')}
                                 </select>
+                            ` : ''}
+
+                            ${item.subIdx >= 0 ? `
+                                <button type="button" onclick="event.stopPropagation(); ${waitingModalCall}"
+                                        class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded border text-[9px] font-extrabold transition shrink-0 cursor-pointer max-w-[160px] truncate ${
+                                            item.waiting
+                                                ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
+                                                : 'bg-slate-100 dark:bg-slate-700 hover:bg-amber-500/20 text-slate-600 dark:text-slate-300 hover:text-amber-600 border-slate-300 dark:border-slate-600'
+                                        }"
+                                        title="${item.waiting ? '⏸️ Aguardando: ' + escapeHtml(item.waitingReason) + ' (Clique para editar motivo ou retomar)' : 'Colocar em Aguardando e informar observação para o motivo'}">
+                                    <i class="fa-solid fa-circle-pause text-[8px]"></i>
+                                    <span class="truncate">${item.waiting ? escapeHtml(item.waitingReason || 'Aguardando') : 'Aguardando'}</span>
+                                </button>
                             ` : ''}
 
                             ${item.exceedsDeadline ? `
@@ -5087,6 +5222,9 @@ function renderGanttView(filteredTasks, containerEl) {
             </div>
         `;
     });
+
+    // Limpa IDs genéricos após normalizar por macroKey individual para permitir recolher/expandir cada barra individualmente sem travar
+    filteredTasks.forEach(t => expandedGanttMacroSet.delete(t.id));
 
     html += `
                 </div>
@@ -5272,3 +5410,1347 @@ if (document.readyState === 'loading') {
     initAllResizableModals();
 }
 
+
+
+// =========================================================================
+// MÓDULO V37:
+// 1. SENHA OBRIGATÓRIA AO ATRIBUIR FOLGA, HORA EXTRA OU PERÍODO DE FÉRIAS
+// 2. ESCALA POR MEMBRO DA EQUIPE (HORA EXTRA, FOLGA E PERÍODO DE FÉRIAS)
+// 3. AVISOS AGRUPADOS POR TAREFA, RETORNO PARA NÃO LIDO, CÓPIA PARA QUEM
+//    CRIOU COM O MESMO STATUS, RESPOSTA VINCULADA NO MESMO AVISO E REMOÇÃO
+//    DE MENSAGEM POR WHATSAPP NOS AVISOS
+// =========================================================================
+let hideCompletedSubtasks = false;
+let pendingWaitingTarget = null; // { type: 'task' | 'subtask', taskId, subIdx }
+let pendingCustomScheduleCallback = null;
+
+const NOTIFICATIONS_STORAGE_KEY = 'taskflow_pro_notifications_v1';
+const NOTIFICATIONS_COLLECTION = 'avisos_notificacoes_v1';
+let appNotifications = [];
+let currentNotificationsFilter = 'all'; // 'all' | 'mine' | 'unread' | 'waiting'
+let firestoreNotificationsUnsubscribe = null;
+const expandedNotificationTaskGroups = new Set(); // Vazio por padrão = Grupos de avisos por tarefa recolhidos!
+const expandedNotificationCardsSet = new Set();   // Vazio por padrão = Cada aviso individual mantido recolhido ao cabeçalho!
+
+function shouldHideCompletedSubtasks() {
+    const chkSub = document.getElementById('hideCompletedSubtasksToggle');
+    if (chkSub) return Boolean(chkSub.checked);
+    return Boolean(hideCompletedSubtasks);
+}
+
+function toggleHideCompletedSubtasks(checked) {
+    hideCompletedSubtasks = Boolean(checked);
+    const chk = document.getElementById('hideCompletedSubtasksToggle');
+    if (chk && chk.checked !== hideCompletedSubtasks) {
+        chk.checked = hideCompletedSubtasks;
+    }
+    renderAll();
+}
+
+function handleModalTaskStatusChange(statusVal) {
+    const box = document.getElementById('modalTaskWaitingReasonBox');
+    if (!box) return;
+    if (statusVal === 'waiting') {
+        box.classList.remove('hidden');
+        setTimeout(() => document.getElementById('taskWaitingReasonInput')?.focus(), 50);
+    } else {
+        box.classList.add('hidden');
+    }
+}
+
+function toggleModalSubtaskWaiting(subIdx) {
+    ensureSubtaskStructure(modalSubtasks);
+    const sub = modalSubtasks[subIdx];
+    if (!sub) return;
+    sub.waiting = !sub.waiting;
+    if (!sub.waiting) {
+        sub.waitingReason = '';
+    } else {
+        sub.completed = false;
+        sub._justMarkedWaitingInModal = true;
+    }
+    renderModalSubtasks();
+}
+
+function updateModalSubtaskWaitingReason(subIdx, reasonText) {
+    ensureSubtaskStructure(modalSubtasks);
+    if (!modalSubtasks[subIdx]) return;
+    modalSubtasks[subIdx].waitingReason = reasonText;
+}
+
+function openWaitingReasonModal(taskId, subIdx = null) {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    const modal = document.getElementById('waitingReasonModal');
+    const lbl = document.getElementById('waitingModalTargetLabel');
+    const inp = document.getElementById('waitingReasonModalInput');
+    const remBtn = document.getElementById('waitingModalRemoveBtn');
+    const notifyTxt = document.getElementById('waitingModalNotifyText');
+
+    const taskResponsible = (task.author || '').trim() || 'Responsável da Tarefa';
+
+    if (subIdx !== null && subIdx >= 0 && task.subtasks && task.subtasks[subIdx]) {
+        const sub = task.subtasks[subIdx];
+        pendingWaitingTarget = { type: 'subtask', taskId, subIdx };
+        if (lbl) lbl.textContent = `Subtarefa: ${sub.text}`;
+        if (inp) inp.value = sub.waitingReason || '';
+        if (remBtn) remBtn.classList.toggle('hidden', !sub.waiting);
+        if (notifyTxt) {
+            notifyTxt.innerHTML = `Ao salvar, o responsável da tarefa (<strong>${escapeHtml(taskResponsible)}</strong>) será avisado e você manterá uma cópia com o mesmo status na <strong>Tela de Avisos</strong>.`;
+        }
+    } else {
+        pendingWaitingTarget = { type: 'task', taskId, subIdx: null };
+        if (lbl) lbl.textContent = `Tarefa: ${task.title}`;
+        if (inp) inp.value = task.waitingReason || '';
+        if (remBtn) remBtn.classList.toggle('hidden', task.status !== 'waiting' && !task.waiting);
+        if (notifyTxt) {
+            notifyTxt.innerHTML = `Ao salvar, o responsável da tarefa (<strong>${escapeHtml(taskResponsible)}</strong>) será avisado e você manterá uma cópia com o mesmo status na <strong>Tela de Avisos</strong>.`;
+        }
+    }
+
+    modal?.classList.remove('hidden');
+    setTimeout(() => inp?.focus(), 50);
+}
+
+function closeWaitingReasonModal() {
+    pendingWaitingTarget = null;
+    document.getElementById('waitingReasonModal')?.classList.add('hidden');
+    renderAll();
+}
+
+function setQuickWaitingReason(text) {
+    const inp = document.getElementById('waitingReasonModalInput');
+    if (inp) {
+        inp.value = text;
+        inp.focus();
+    }
+}
+
+async function handleConfirmWaitingReason(event) {
+    event.preventDefault();
+    if (!pendingWaitingTarget) return;
+
+    const reason = (document.getElementById('waitingReasonModalInput')?.value || '').trim();
+    if (!reason) {
+        showToast('Informe a observação para o motivo de Aguardando.', 'error');
+        return;
+    }
+
+    const { type, taskId, subIdx } = pendingWaitingTarget;
+    const task = tasks.find(t => t.id === taskId);
+    pendingWaitingTarget = null;
+    document.getElementById('waitingReasonModal')?.classList.add('hidden');
+    if (!task) return;
+
+    const responsibleLabel = (task.author || '').trim() || 'Responsável principal';
+
+    if (type === 'subtask' && task.subtasks && task.subtasks[subIdx]) {
+        task.subtasks[subIdx].waiting = true;
+        task.subtasks[subIdx].waitingReason = reason;
+        task.subtasks[subIdx].completed = false;
+        await createWaitingItemNotification(task, subIdx, reason);
+        showToast(`Item em Aguardando! Aviso enviado a ${responsibleLabel} (cópia sincronizada criada para você).`, 'info');
+    } else {
+        task.status = 'waiting';
+        task.waiting = true;
+        task.waitingReason = reason;
+        await createWaitingItemNotification(task, null, reason);
+        showToast(`Tarefa em Aguardando! Aviso enviado a ${responsibleLabel} (cópia sincronizada criada para você).`, 'info');
+    }
+
+    task.updatedAt = Date.now();
+    renderAll();
+    await upsertTaskToCloud(task);
+}
+
+async function removeWaitingStatusFromModal() {
+    if (!pendingWaitingTarget) return;
+    const { type, taskId, subIdx } = pendingWaitingTarget;
+    const task = tasks.find(t => t.id === taskId);
+    pendingWaitingTarget = null;
+    document.getElementById('waitingReasonModal')?.classList.add('hidden');
+    if (!task) return;
+
+    if (type === 'subtask' && task.subtasks && task.subtasks[subIdx]) {
+        task.subtasks[subIdx].waiting = false;
+        task.subtasks[subIdx].waitingReason = '';
+        await resolveWaitingNotificationsForTarget(taskId, subIdx);
+        showToast('Subtarefa retomada (saiu de Aguardando)!', 'success');
+    } else {
+        task.status = 'in_progress';
+        task.waiting = false;
+        task.waitingReason = '';
+        await resolveWaitingNotificationsForTarget(taskId, null);
+        showToast('Tarefa retomada para Em Andamento!', 'success');
+    }
+
+    task.updatedAt = Date.now();
+    renderAll();
+    await upsertTaskToCloud(task);
+}
+
+async function notifyWaitingChangesFromTaskSave(taskObj) {
+    if (!taskObj) return;
+    if (taskObj.status === 'waiting' && taskObj.waitingReason) {
+        await createWaitingItemNotification(taskObj, null, taskObj.waitingReason);
+    }
+    if (Array.isArray(taskObj.subtasks)) {
+        for (let idx = 0; idx < taskObj.subtasks.length; idx++) {
+            const s = taskObj.subtasks[idx];
+            if (s && s.waiting && (s._justMarkedWaitingInModal || s.waitingReason)) {
+                delete s._justMarkedWaitingInModal;
+                await createWaitingItemNotification(taskObj, idx, s.waitingReason || 'Aguardando');
+            }
+        }
+    }
+}
+
+// =========================================================================
+// MODAL DE SENHA PARA ATRIBUIR FOLGA, HORA EXTRA OU PERÍODO DE FÉRIAS
+// POR MEMBRO DA EQUIPE OU GERAL
+// =========================================================================
+function openScheduleExceptionAuthModal(opts = {}) {
+    const modal = document.getElementById('scheduleExceptionAuthModal');
+    if (!modal) return;
+
+    const mode = opts.mode || 'entry';
+    const modeInp = document.getElementById('scheduleAuthModeInput');
+    if (modeInp) modeInp.value = mode;
+
+    const entryBox = document.getElementById('scheduleAuthEntryFieldsBox');
+    const customDesc = document.getElementById('scheduleAuthCustomActionDesc');
+    const errAlert = document.getElementById('scheduleAuthErrorAlert');
+    const passInp = document.getElementById('scheduleAuthPasswordInput');
+    const titleEl = document.getElementById('scheduleAuthModalTitle');
+
+    if (errAlert) {
+        errAlert.classList.add('hidden');
+        errAlert.textContent = '';
+    }
+    if (passInp) passInp.value = '';
+
+    if (mode === 'custom_callback') {
+        pendingCustomScheduleCallback = opts.onAuthorized || null;
+        if (titleEl) titleEl.textContent = opts.title || 'Confirmar Alteração de Jornada com Senha';
+        entryBox?.classList.add('hidden');
+        if (customDesc) {
+            customDesc.innerHTML = opts.description || 'Digite sua senha para autorizar esta alteração na escala de trabalho:';
+            customDesc.classList.remove('hidden');
+        }
+    } else {
+        pendingCustomScheduleCallback = null;
+        if (titleEl) titleEl.textContent = 'Atribuir Hora Extra, Folga ou Férias';
+        entryBox?.classList.remove('hidden');
+        customDesc?.classList.add('hidden');
+
+        const memSel = document.getElementById('scheduleAuthMemberSelect');
+        if (memSel) {
+            const allMembers = typeof getAllTeamMembersList === 'function' ? getAllTeamMembersList() : [];
+            const selectedMember = opts.member || 'all';
+            memSel.innerHTML = `<option value="all" ${selectedMember === 'all' ? 'selected' : ''}>👥 Toda a Equipe (Geral)</option>` +
+                allMembers.map(m => {
+                    const isSel = selectedMember !== 'all' && normalizeIdentityStr(m.name) === normalizeIdentityStr(selectedMember);
+                    return `<option value="${escapeHtml(m.name)}" ${isSel ? 'selected' : ''}>👤 ${escapeHtml(m.name)}</option>`;
+                }).join('');
+        }
+
+        const typeSel = document.getElementById('scheduleAuthTypeSelect');
+        if (typeSel) typeSel.value = opts.type || 'overtime';
+
+        const todayIso = getLocalDateStr(0);
+        const startInp = document.getElementById('scheduleAuthStartDateInput');
+        const endInp = document.getElementById('scheduleAuthEndDateInput');
+        if (startInp) startInp.value = opts.startDate || todayIso;
+        if (endInp) endInp.value = opts.endDate || opts.startDate || todayIso;
+
+        const noteInp = document.getElementById('scheduleAuthNoteInput');
+        if (noteInp) noteInp.value = opts.note || '';
+    }
+
+    modal.classList.remove('hidden');
+    setTimeout(() => passInp?.focus(), 50);
+}
+
+function closeScheduleExceptionAuthModal() {
+    pendingCustomScheduleCallback = null;
+    document.getElementById('scheduleExceptionAuthModal')?.classList.add('hidden');
+    renderAll();
+}
+
+function handleScheduleAuthTypeChange(typeVal) {
+    const noteInp = document.getElementById('scheduleAuthNoteInput');
+    if (!noteInp) return;
+    if (typeVal === 'vacation' && !noteInp.value) {
+        noteInp.placeholder = 'Ex: Período de Férias do membro...';
+    } else if (typeVal === 'overtime' && !noteInp.value) {
+        noteInp.placeholder = 'Ex: Hora extra autorizada (+8h)...';
+    } else if (typeVal === 'off' && !noteInp.value) {
+        noteInp.placeholder = 'Ex: Folga compensatória / dispensa...';
+    }
+}
+
+async function handleConfirmScheduleExceptionWithPassword(event) {
+    event.preventDefault();
+    const passInp = document.getElementById('scheduleAuthPasswordInput');
+    const errAlert = document.getElementById('scheduleAuthErrorAlert');
+    const rawPass = passInp ? passInp.value : '';
+
+    const isValid = await verifyUserOrAdminPassword(rawPass);
+    if (!isValid) {
+        if (errAlert) {
+            errAlert.innerHTML = `<i class="fa-solid fa-circle-exclamation mr-1"></i>Senha incorreta! Atribuição de folga, férias ou hora extra não autorizada.`;
+            errAlert.classList.remove('hidden');
+        }
+        showToast('Senha incorreta! A atribuição de folga/hora extra foi bloqueada.', 'error');
+        return;
+    }
+
+    const mode = document.getElementById('scheduleAuthModeInput')?.value || 'entry';
+    if (mode === 'custom_callback' && typeof pendingCustomScheduleCallback === 'function') {
+        const cb = pendingCustomScheduleCallback;
+        closeScheduleExceptionAuthModal();
+        await cb();
+        return;
+    }
+
+    const memberVal = document.getElementById('scheduleAuthMemberSelect')?.value || 'all';
+    const typeVal = document.getElementById('scheduleAuthTypeSelect')?.value || 'overtime';
+    let startDate = document.getElementById('scheduleAuthStartDateInput')?.value || getLocalDateStr(0);
+    let endDate = document.getElementById('scheduleAuthEndDateInput')?.value || startDate;
+    const note = (document.getElementById('scheduleAuthNoteInput')?.value || '').trim();
+
+    if (endDate < startDate) {
+        const tmp = startDate;
+        startDate = endDate;
+        endDate = tmp;
+    }
+
+    const st = getWorkSettings();
+    if (!Array.isArray(st.memberEntries)) st.memberEntries = [];
+    if (!st.dateOverrides) st.dateOverrides = {};
+
+    // Remove lançamentos anteriores sobrepostos do mesmo membro no mesmo período
+    st.memberEntries = st.memberEntries.filter(e => {
+        const sameMember = (memberVal === 'all')
+            ? (!e.member || e.member === 'all')
+            : (e.member && normalizeIdentityStr(e.member) === normalizeIdentityStr(memberVal));
+        if (!sameMember) return true;
+        const overlaps = (e.startDate <= endDate && e.endDate >= startDate);
+        return !overlaps;
+    });
+
+    if (typeVal === 'default') {
+        if (memberVal === 'all') {
+            let curMs = new Date(startDate + 'T00:00:00').getTime();
+            const endMs = new Date(endDate + 'T00:00:00').getTime();
+            while (curMs <= endMs) {
+                delete st.dateOverrides[formatMsToDateIso(curMs)];
+                curMs += 86400000;
+            }
+        }
+        saveWorkSettings(st);
+        closeScheduleExceptionAuthModal();
+        if (document.getElementById('workSettingsModal')) openWorkSettingsModal();
+        renderAll();
+        showToast('Escala restaurada para o padrão no período selecionado!', 'info');
+        return;
+    }
+
+    st.memberEntries.push({
+        id: 'sch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        member: memberVal,
+        type: typeVal,
+        startDate,
+        endDate,
+        note,
+        createdBy: currentAuthor || currentUserLogin || 'Admin',
+        createdAt: Date.now()
+    });
+
+    if (memberVal === 'all' && startDate === endDate) {
+        st.dateOverrides[startDate] = typeVal;
+    }
+
+    saveWorkSettings(st);
+    closeScheduleExceptionAuthModal();
+    if (document.getElementById('workSettingsModal')) openWorkSettingsModal();
+    renderAll();
+
+    const typeNames = {
+        overtime: 'Hora Extra (+8h)',
+        off: 'Folga (0h)',
+        vacation: 'Período de Férias',
+        work: 'Dia Útil (8h)'
+    };
+    const targetName = memberVal === 'all' ? 'Toda a Equipe' : memberVal;
+    showToast(`${typeNames[typeVal] || typeVal} atribuída para ${targetName} (${formatDisplayDate(startDate)} a ${formatDisplayDate(endDate)})!`, 'success');
+}
+
+// =========================================================================
+// CENTRAL / TELA DE AVISOS:
+// - AGRUPAMENTO POR TAREFA
+// - RETORNO PARA NÃO LIDO
+// - CÓPIA PARA QUEM CRIOU COM O MESMO STATUS SINCRONIZADO
+// - ENVIO DE RESPOSTA VINCULADO NO MESMO AVISO
+// - SEM MENSAGENS POR WHATSAPP
+// =========================================================================
+function loadNotificationsFromLocal() {
+    try {
+        const raw = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                appNotifications = parsed;
+            }
+        }
+    } catch (e) {}
+}
+
+function saveNotificationsToLocal() {
+    try {
+        localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(appNotifications));
+    } catch (e) {}
+}
+
+function initNotificationsRealtimeListener() {
+    loadNotificationsFromLocal();
+    updateArchivedAndNotificationsBadges();
+
+    if (typeof isOnlineModeEnabled !== 'undefined' && isOnlineModeEnabled && db && firebaseConnected) {
+        if (firestoreNotificationsUnsubscribe) {
+            firestoreNotificationsUnsubscribe();
+            firestoreNotificationsUnsubscribe = null;
+        }
+        try {
+            firestoreNotificationsUnsubscribe = db.collection(NOTIFICATIONS_COLLECTION).onSnapshot(snap => {
+                const cloudList = [];
+                snap.forEach(doc => {
+                    const d = doc.data();
+                    if (d && d.id) cloudList.push(d);
+                });
+                if (cloudList.length > 0 || appNotifications.length === 0) {
+                    appNotifications = cloudList.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+                    saveNotificationsToLocal();
+                }
+                updateArchivedAndNotificationsBadges();
+                const modal = document.getElementById('notificationsModal');
+                if (modal && !modal.classList.contains('hidden')) {
+                    renderNotificationsModalList();
+                }
+            }, err => {
+                console.warn('Aviso listener de notificações:', err);
+            });
+        } catch (e) {}
+        // Também sincroniza configurações de jornada se existirem na nuvem
+        try {
+            db.collection('config_jornada_v1').doc('work_settings').onSnapshot(doc => {
+                if (doc && doc.exists) {
+                    const data = doc.data();
+                    if (data) {
+                        localStorage.setItem(WORK_SETTINGS_KEY, JSON.stringify(data));
+                        renderAll();
+                    }
+                }
+            }, () => {});
+        } catch (e) {}
+    }
+}
+
+async function upsertNotificationToCloud(notifObj) {
+    if (!notifObj || !notifObj.id) return;
+    const existingIdx = appNotifications.findIndex(n => n.id === notifObj.id);
+    if (existingIdx !== -1) {
+        appNotifications[existingIdx] = notifObj;
+    } else {
+        appNotifications.unshift(notifObj);
+    }
+    appNotifications.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    saveNotificationsToLocal();
+    updateArchivedAndNotificationsBadges();
+
+    if (typeof isOnlineModeEnabled !== 'undefined' && isOnlineModeEnabled && db && firebaseConnected) {
+        try {
+            const safeId = getSafeFirestoreDocId(notifObj.id);
+            await db.collection(NOTIFICATIONS_COLLECTION).doc(safeId).set(JSON.parse(JSON.stringify(notifObj)), { merge: true });
+        } catch (e) {
+            console.warn('Erro ao gravar aviso no Firestore:', e);
+        }
+    }
+}
+
+async function removeNotificationFromCloud(notifId) {
+    appNotifications = appNotifications.filter(n => n.id !== notifId);
+    saveNotificationsToLocal();
+    updateArchivedAndNotificationsBadges();
+
+    if (typeof isOnlineModeEnabled !== 'undefined' && isOnlineModeEnabled && db && firebaseConnected) {
+        try {
+            const safeId = getSafeFirestoreDocId(notifId);
+            await db.collection(NOTIFICATIONS_COLLECTION).doc(safeId).delete();
+        } catch (e) {}
+    }
+}
+
+/**
+ * Status unificado e compartilhado entre destinatário e criador do aviso ("mesmo status"):
+ * - Se `notif.isRead === true`, está Lido para ambos (destinatário e cópia de quem criou).
+ * - Se `notif.isRead === false` (ou indefinido sem readBy), está Não Lido para ambos!
+ */
+function isNotificationUnreadShared(notif) {
+    if (!notif || notif.resolved) return false;
+    if (typeof notif.isRead === 'boolean') {
+        return !notif.isRead;
+    }
+    const readBy = Array.isArray(notif.readBy) ? notif.readBy : [];
+    return readBy.length === 0;
+}
+
+function isNotificationCreatedByCurrentUser(notif) {
+    if (!notif) return false;
+    return doesAssigneeMatchUser(notif.triggeredBy, currentAuthor, currentUserLogin) ||
+           (notif.triggeredByLogin && normalizeIdentityStr(notif.triggeredByLogin) === normalizeIdentityStr(currentUserLogin));
+}
+
+function isNotificationTargetedAtCurrentUser(notif) {
+    if (!notif) return false;
+    if (!notif.targetUser || notif.targetUser === 'Todos da Equipe') return true;
+    return doesAssigneeMatchUser(notif.targetUser, currentAuthor, currentUserLogin) ||
+           (notif.subAssignee && doesAssigneeMatchUser(notif.subAssignee, currentAuthor, currentUserLogin));
+}
+
+function isNotificationMineOrCreatedByMe(notif) {
+    return isNotificationTargetedAtCurrentUser(notif) || isNotificationCreatedByCurrentUser(notif);
+}
+
+async function createWaitingItemNotification(task, subIdx = null, reason = '') {
+    if (!task) return;
+    const isSub = subIdx !== null && subIdx >= 0 && task.subtasks && task.subtasks[subIdx];
+    const subObj = isSub ? task.subtasks[subIdx] : null;
+    const itemTitle = isSub ? subObj.text : task.title;
+    const targetResponsible = (task.author || '').trim() || (subObj?.assignee || '').trim() || 'Sem responsável definido';
+    const subAssignee = (subObj?.assignee || '').trim();
+    const triggeredBy = (currentAuthor || currentUserLogin || 'Usuário').trim();
+
+    const existing = appNotifications.find(n =>
+        n.type === 'waiting_item' &&
+        n.taskId === task.id &&
+        (isSub ? Number(n.subIdx) === Number(subIdx) : (n.subIdx === null || n.subIdx === undefined)) &&
+        !n.resolved
+    );
+
+    const notifObj = existing ? {
+        ...existing,
+        taskTitle: task.title,
+        itemTitle,
+        reason: reason || 'Aguardando',
+        targetUser: targetResponsible,
+        subAssignee,
+        triggeredBy,
+        triggeredByLogin: currentUserLogin || '',
+        keepCreatorCopy: true,
+        isRead: false,
+        readBy: [],
+        resolved: false,
+        replies: Array.isArray(existing.replies) ? existing.replies : [],
+        createdAt: Date.now()
+    } : {
+        id: 'notif_wait_' + task.id + '_' + (isSub ? subIdx : 'macro') + '_' + Date.now(),
+        type: 'waiting_item',
+        taskId: task.id,
+        taskTitle: task.title,
+        subIdx: isSub ? subIdx : null,
+        itemTitle,
+        reason: reason || 'Aguardando',
+        targetUser: targetResponsible,
+        subAssignee,
+        triggeredBy,
+        triggeredByLogin: currentUserLogin || '',
+        keepCreatorCopy: true,
+        isRead: false,
+        readBy: [],
+        resolved: false,
+        replies: [],
+        createdAt: Date.now()
+    };
+
+    await upsertNotificationToCloud(notifObj);
+}
+
+async function resolveWaitingNotificationsForTarget(taskId, subIdx = null) {
+    const isSub = subIdx !== null && subIdx >= 0;
+    const matches = appNotifications.filter(n =>
+        n.type === 'waiting_item' &&
+        n.taskId === taskId &&
+        (isSub ? Number(n.subIdx) === Number(subIdx) : (n.subIdx === null || n.subIdx === undefined)) &&
+        !n.resolved
+    );
+    for (const notif of matches) {
+        notif.resolved = true;
+        notif.resolvedAt = Date.now();
+        await upsertNotificationToCloud(notif);
+    }
+}
+
+function syncActiveWaitingItemsToNotifications() {
+    (tasks || []).filter(t => !t.archived).forEach(task => {
+        if (task.status === 'waiting') {
+            const hasActive = appNotifications.some(n => n.type === 'waiting_item' && n.taskId === task.id && n.subIdx === null);
+            if (!hasActive) {
+                appNotifications.push({
+                    id: 'notif_sync_task_' + task.id,
+                    type: 'waiting_item',
+                    taskId: task.id,
+                    taskTitle: task.title,
+                    subIdx: null,
+                    itemTitle: task.title,
+                    reason: task.waitingReason || 'Aguardando',
+                    targetUser: task.author || 'Responsável da Tarefa',
+                    subAssignee: '',
+                    triggeredBy: task.author || 'Sistema',
+                    keepCreatorCopy: true,
+                    isRead: false,
+                    readBy: [],
+                    resolved: false,
+                    replies: [],
+                    createdAt: task.updatedAt || task.createdAt || Date.now()
+                });
+            }
+        }
+        if (Array.isArray(task.subtasks)) {
+            task.subtasks.forEach((sub, sIdx) => {
+                if (sub && sub.waiting && !sub.completed) {
+                    const hasActive = appNotifications.some(n => n.type === 'waiting_item' && n.taskId === task.id && Number(n.subIdx) === sIdx);
+                    if (!hasActive) {
+                        appNotifications.push({
+                            id: 'notif_sync_sub_' + task.id + '_' + sIdx,
+                            type: 'waiting_item',
+                            taskId: task.id,
+                            taskTitle: task.title,
+                            subIdx: sIdx,
+                            itemTitle: sub.text,
+                            reason: sub.waitingReason || 'Aguardando',
+                            targetUser: task.author || sub.assignee || 'Responsável da Tarefa',
+                            subAssignee: sub.assignee || '',
+                            triggeredBy: sub.assignee || task.author || 'Sistema',
+                            keepCreatorCopy: true,
+                            isRead: false,
+                            readBy: [],
+                            resolved: false,
+                            replies: [],
+                            createdAt: task.updatedAt || task.createdAt || Date.now()
+                        });
+                    }
+                }
+            });
+        }
+    });
+    appNotifications.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+function updateArchivedAndNotificationsBadges() {
+    syncActiveWaitingItemsToNotifications();
+
+    const unreadCount = appNotifications.filter(n => !n.resolved && isNotificationUnreadShared(n)).length;
+    const notifBadge = document.getElementById('headerNotificationsBadge');
+    const modalPill = document.getElementById('notificationsModalUnreadPill');
+
+    if (notifBadge) {
+        if (unreadCount > 0) {
+            notifBadge.textContent = unreadCount;
+            notifBadge.classList.remove('hidden');
+        } else {
+            notifBadge.textContent = '0';
+            notifBadge.classList.add('hidden');
+        }
+    }
+    if (modalPill) {
+        if (unreadCount > 0) {
+            modalPill.textContent = `${unreadCount} não lido(s)`;
+            modalPill.classList.remove('hidden');
+        } else {
+            modalPill.classList.add('hidden');
+        }
+    }
+
+    const archivedList = (tasks || []).filter(t => Boolean(t.archived) && doesTaskAppearInRoom(t, currentWorkspace));
+    const archBadge = document.getElementById('headerArchivedCountBadge');
+    if (archBadge) {
+        archBadge.textContent = archivedList.length;
+    }
+}
+
+function handleManualNotifTaskChange(selectedTaskId) {
+    if (!selectedTaskId) return;
+    const t = tasks.find(x => x.id === selectedTaskId);
+    const targetSel = document.getElementById('manualNotifTargetSelect');
+    if (t && t.author && targetSel) {
+        targetSel.value = t.author;
+    }
+}
+
+function openNotificationsModal() {
+    syncActiveWaitingItemsToNotifications();
+    const modal = document.getElementById('notificationsModal');
+    if (!modal) return;
+
+    const targetSel = document.getElementById('manualNotifTargetSelect');
+    if (targetSel && typeof buildMemberSelectOptionsHTML === 'function') {
+        targetSel.innerHTML = buildMemberSelectOptionsHTML('', true, '👥 Todos da Equipe');
+    }
+
+    const taskSel = document.getElementById('manualNotifTaskSelect');
+    if (taskSel) {
+        const activeTasks = (tasks || []).filter(t => !t.archived && doesTaskAppearInRoom(t, currentWorkspace));
+        taskSel.innerHTML = `<option value="">📂 Geral (Sem tarefa específica)</option>` +
+            activeTasks.map(t => `<option value="${escapeHtml(t.id)}">📂 ${escapeHtml(t.title)}</option>`).join('');
+    }
+
+    renderNotificationsModalList();
+    modal.classList.remove('hidden');
+}
+
+function closeNotificationsModal() {
+    document.getElementById('notificationsModal')?.classList.add('hidden');
+}
+
+function setNotificationsFilter(filterMode) {
+    currentNotificationsFilter = filterMode;
+    ['all', 'mine', 'unread', 'waiting'].forEach(k => {
+        const btn = document.getElementById('notifFilterBtn-' + k);
+        if (btn) {
+            btn.className = (k === filterMode)
+                ? 'px-2.5 py-1 rounded-lg transition bg-indigo-600 text-white shadow-sm'
+                : 'px-2.5 py-1 rounded-lg transition text-slate-600 dark:text-slate-300 hover:text-indigo-500';
+        }
+    });
+    renderNotificationsModalList();
+}
+
+function toggleNotificationTaskGroupCollapse(groupKey) {
+    if (expandedNotificationTaskGroups.has(groupKey)) {
+        expandedNotificationTaskGroups.delete(groupKey);
+    } else {
+        expandedNotificationTaskGroups.add(groupKey);
+    }
+    renderNotificationsModalList();
+}
+
+function toggleSingleNotificationCollapse(notifId, event = null) {
+    if (event && event.target && (['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA'].includes(event.target.tagName) || event.target.closest('button, input, select, textarea, form'))) {
+        return;
+    }
+    if (event && event.stopPropagation) event.stopPropagation();
+    if (expandedNotificationCardsSet.has(notifId)) {
+        expandedNotificationCardsSet.delete(notifId);
+    } else {
+        expandedNotificationCardsSet.add(notifId);
+    }
+    renderNotificationsModalList();
+}
+
+function expandOrCollapseAllNotifications(expand) {
+    if (!expand) {
+        expandedNotificationTaskGroups.clear();
+        expandedNotificationCardsSet.clear();
+    } else {
+        appNotifications.forEach(n => {
+            const gKey = n.taskId || '__geral__';
+            expandedNotificationTaskGroups.add(gKey);
+            expandedNotificationCardsSet.add(n.id);
+        });
+    }
+    renderNotificationsModalList();
+}
+
+function formatNotificationDateTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+        ' às ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderNotificationsModalList() {
+    const container = document.getElementById('notificationsListContainer');
+    const summaryEl = document.getElementById('notificationsFooterSummary');
+    if (!container) return;
+
+    updateArchivedAndNotificationsBadges();
+
+    const filtered = appNotifications.filter(n => {
+        if (currentNotificationsFilter === 'mine') {
+            return isNotificationMineOrCreatedByMe(n);
+        }
+        if (currentNotificationsFilter === 'unread') {
+            return isNotificationUnreadShared(n);
+        }
+        if (currentNotificationsFilter === 'waiting') {
+            return n.type === 'waiting_item' && !n.resolved;
+        }
+        return true;
+    });
+
+    if (summaryEl) {
+        const activeWaitingCount = appNotifications.filter(n => n.type === 'waiting_item' && !n.resolved).length;
+        summaryEl.textContent = `${filtered.length} aviso(s) exibido(s) • ${activeWaitingCount} item(ns) aguardando • Status sincronizado entre criador e destinatário`;
+    }
+
+    if (filtered.length === 0) {
+        container.innerHTML = `
+            <div class="p-10 text-center space-y-2.5">
+                <div class="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-500 flex items-center justify-center text-xl mx-auto">
+                    <i class="fa-regular fa-bell-slash"></i>
+                </div>
+                <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">Nenhum aviso encontrado neste filtro</h4>
+                <p class="text-xs text-slate-400 max-w-sm mx-auto">
+                    Os avisos são agrupados por tarefa e mantêm uma cópia com o mesmo status tanto para quem criou quanto para o responsável da tarefa.
+                </p>
+            </div>
+        `;
+        return;
+    }
+
+    // AGRUPAMENTO DE AVISOS POR TAREFA
+    const taskGroupsMap = new Map();
+    filtered.forEach(notif => {
+        const groupKey = notif.taskId || '__geral__';
+        if (!taskGroupsMap.has(groupKey)) {
+            const taskObj = notif.taskId ? tasks.find(t => t.id === notif.taskId) : null;
+            taskGroupsMap.set(groupKey, {
+                groupKey,
+                taskId: notif.taskId || null,
+                taskTitle: taskObj?.title || notif.taskTitle || 'Comunicados Gerais (Sem Tarefa Vinculada)',
+                taskResponsible: taskObj?.author || notif.targetUser || 'Equipe',
+                items: []
+            });
+        }
+        taskGroupsMap.get(groupKey).items.push(notif);
+    });
+
+    const groupsList = Array.from(taskGroupsMap.values());
+
+        container.innerHTML = groupsList.map(group => {
+        const isGroupExpanded = expandedNotificationTaskGroups.has(group.groupKey);
+        const isGroupCollapsed = !isGroupExpanded;
+        const unreadInGroup = group.items.filter(n => isNotificationUnreadShared(n)).length;
+        const waitingInGroup = group.items.filter(n => n.type === 'waiting_item' && !n.resolved).length;
+        const safeGroupKey = escapeHtml(group.groupKey).replace(/'/g, "\\'");
+
+        return `
+            <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40 overflow-hidden shadow-sm">
+                <!-- Cabeçalho do Grupo da Tarefa (Recolhido por padrão • Clique para expandir/recolher) -->
+                <div onclick="toggleNotificationTaskGroupCollapse('${safeGroupKey}')" class="px-4 py-2.5 bg-slate-100 dark:bg-slate-800/90 border-b border-slate-200/80 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2 cursor-pointer select-none hover:bg-slate-200/60 dark:hover:bg-slate-800 transition">
+                    <div class="flex items-center gap-2 min-w-0 flex-1">
+                        <i class="fa-solid ${isGroupCollapsed ? 'fa-chevron-right text-slate-400' : 'fa-chevron-down text-indigo-500'} text-xs shrink-0 transition"></i>
+                        <span class="w-6 h-6 rounded-lg bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 text-xs">
+                            <i class="fa-solid ${group.taskId ? 'fa-clipboard-list' : 'fa-bullhorn'}"></i>
+                        </span>
+                        <div class="min-w-0 flex-1">
+                            <div class="text-xs sm:text-sm font-extrabold text-slate-800 dark:text-slate-100 truncate" title="${escapeHtml(group.taskTitle)}">
+                                ${escapeHtml(group.taskTitle)}
+                            </div>
+                            <div class="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                                <span><i class="fa-solid fa-user-shield text-indigo-500 mr-1"></i>Resp. Tarefa: <strong>${escapeHtml(group.taskResponsible)}</strong></span>
+                                <span class="text-indigo-500 font-semibold">${isGroupCollapsed ? '• Clique para abrir avisos' : '• Clique para recolher'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        ${unreadInGroup > 0 ? `
+                            <span class="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-extrabold">
+                                ${unreadInGroup} não lido(s)
+                            </span>
+                        ` : ''}
+                        ${waitingInGroup > 0 ? `
+                            <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[10px] font-extrabold">
+                                ⏸️ ${waitingInGroup} aguardando
+                            </span>
+                        ` : ''}
+                        <span class="px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-[10px] font-bold">
+                            ${group.items.length} aviso(s)
+                        </span>
+                        ${group.taskId ? `
+                            <button type="button" onclick="event.stopPropagation(); closeNotificationsModal(); openTaskModal('${escapeHtml(group.taskId)}')" class="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold transition flex items-center gap-1" title="Abrir Tarefa Principal">
+                                <i class="fa-solid fa-arrow-up-right-from-square text-[8px]"></i> Tarefa
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+
+                <!-- Lista de Avisos pertencentes a esta Tarefa (Oculta/Recolhida por padrão) -->
+                <div class="${isGroupCollapsed ? 'hidden' : 'block'} p-3 space-y-2">
+                    ${group.items.map(notif => {
+                        const isUnread = isNotificationUnreadShared(notif);
+                        const isTargetMe = isNotificationTargetedAtCurrentUser(notif);
+                        const isCreatedByMe = isNotificationCreatedByCurrentUser(notif);
+                        const isWaitingType = notif.type === 'waiting_item';
+                        const replies = Array.isArray(notif.replies) ? notif.replies : [];
+                        const isNotifExpanded = expandedNotificationCardsSet.has(notif.id);
+                        const summaryTitle = (notif.subIdx !== null && notif.subIdx !== undefined && notif.itemTitle)
+                            ? notif.itemTitle
+                            : (notif.reason || 'Aviso');
+
+                        return `
+                            <div class="rounded-xl border transition overflow-hidden ${
+                                notif.resolved
+                                    ? 'bg-slate-50/70 dark:bg-slate-900/30 border-slate-200/70 dark:border-slate-800 opacity-70'
+                                    : (isUnread
+                                        ? 'bg-amber-500/10 dark:bg-amber-950/30 border-amber-500/45 shadow-sm ring-1 ring-amber-500/20'
+                                        : 'bg-white dark:bg-slate-800/80 border-slate-200 dark:border-slate-700')
+                            }">
+                                <!-- CABEÇALHO COMPACTO DO AVISO (Sempre visível • Mantido recolhido por padrão • Clique para expandir/recolher) -->
+                                <div onclick="toggleSingleNotificationCollapse('${escapeHtml(notif.id)}', event)" class="px-3.5 py-2.5 cursor-pointer select-none hover:bg-slate-100/60 dark:hover:bg-slate-700/40 transition flex flex-wrap items-center justify-between gap-2">
+                                    <div class="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">
+                                        <i class="fa-solid ${isNotifExpanded ? 'fa-chevron-down text-indigo-500' : 'fa-chevron-right text-slate-400'} text-[10px] shrink-0 transition mr-0.5"></i>
+
+                                        <!-- Status Sincronizado (Para Criador e Destinatário) -->
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider shrink-0 ${
+                                            notif.resolved
+                                                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                                                : (isWaitingType
+                                                    ? 'bg-amber-500 text-white shadow-sm'
+                                                    : 'bg-indigo-600 text-white shadow-sm')
+                                        }">
+                                            <i class="fa-solid ${notif.resolved ? 'fa-circle-check' : (isWaitingType ? 'fa-circle-pause' : 'fa-bullhorn')} text-[9px]"></i>
+                                            <span>${notif.resolved ? 'Resolvido' : (isWaitingType ? 'Aguardando' : 'Aviso')}</span>
+                                        </span>
+
+                                        <!-- Indicador Unificado de Status Lido / Não Lido -->
+                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold shrink-0 ${
+                                            isUnread
+                                                ? 'bg-rose-600 text-white shadow-sm'
+                                                : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                                        }" title="Status sincronizado tanto para o responsável da tarefa quanto na cópia de quem criou o aviso">
+                                            <i class="fa-solid ${isUnread ? 'fa-envelope' : 'fa-envelope-open-check'} text-[9px]"></i>
+                                            <span>${isUnread ? 'NÃO LIDO' : 'LIDO'}${replies.length > 0 ? ` (${replies.length} resp.)` : ''}</span>
+                                        </span>
+
+                                        <!-- Resumo curto do Item / Motivo na linha recolhida -->
+                                        <span class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate max-w-[240px] sm:max-w-[340px]" title="${escapeHtml(summaryTitle)}">
+                                            ${escapeHtml(summaryTitle)}
+                                        </span>
+
+                                        ${isCreatedByMe ? `
+                                            <span class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30 shrink-0" title="Cópia mantida para você (criador do aviso) com o mesmo status do destinatário">
+                                                <i class="fa-solid fa-copy text-[8px]"></i> Sua Cópia
+                                            </span>
+                                        ` : ''}
+                                    </div>
+
+                                    <!-- Ações Rápidas Visíveis Mesmo Recolhido -->
+                                    <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
+                                        <span class="hidden sm:inline text-[10px] text-slate-400">
+                                            De <strong>${escapeHtml(notif.triggeredBy || 'Sistema')}</strong> p/ <strong>${escapeHtml(notif.targetUser || 'Todos')}</strong>
+                                        </span>
+                                        ${isUnread ? `
+                                            <button type="button" onclick="markSingleNotificationAsRead('${escapeHtml(notif.id)}')" class="px-2 py-0.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-[10px] font-bold transition flex items-center gap-1" title="Marcar como lido">
+                                                <i class="fa-solid fa-check text-[8px]"></i> Lido
+                                            </button>
+                                        ` : `
+                                            <button type="button" onclick="markSingleNotificationAsUnread('${escapeHtml(notif.id)}')" class="px-2 py-0.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[10px] font-bold transition flex items-center gap-1" title="Retornar para Não Lido">
+                                                <i class="fa-solid fa-envelope text-[8px]"></i> Não Lido
+                                            </button>
+                                        `}
+                                        <button type="button" onclick="toggleSingleNotificationCollapse('${escapeHtml(notif.id)}')" class="w-6 h-6 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-indigo-500/15 text-slate-500 dark:text-slate-300 hover:text-indigo-600 flex items-center justify-center border border-slate-200 dark:border-slate-600 transition" title="${isNotifExpanded ? 'Recolher aviso' : 'Expandir detalhes e responder'}">
+                                            <i class="fa-solid ${isNotifExpanded ? 'fa-chevron-up' : 'fa-chevron-down'} text-[10px]"></i>
+                                        </button>
+                                        <button type="button" onclick="deleteSingleNotification('${escapeHtml(notif.id)}')" class="p-1 rounded hover:bg-rose-500/15 text-slate-400 hover:text-rose-500 transition" title="Excluir este aviso">
+                                            <i class="fa-solid fa-trash-can text-[10px]"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- CORPO EXPANSÍVEL DO AVISO (Mantido recolhido por padrão • Abre ao clicar no aviso) -->
+                                <div class="${isNotifExpanded ? 'block' : 'hidden'} px-3.5 pb-3.5 pt-2 border-t border-slate-200/60 dark:border-slate-700/60 space-y-2.5 bg-white/50 dark:bg-slate-900/25">
+                                    <div class="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+                                        <span><i class="fa-solid fa-paper-plane text-amber-500 mr-1"></i>Enviado por <strong>${escapeHtml(notif.triggeredBy || 'Sistema')}</strong> para <strong>${escapeHtml(notif.targetUser || 'Todos')}</strong></span>
+                                        <span><i class="fa-regular fa-clock mr-1"></i>${formatNotificationDateTime(notif.createdAt)}</span>
+                                    </div>
+
+                                    <div class="space-y-1 text-xs">
+                                        ${notif.subIdx !== null && notif.subIdx !== undefined ? `
+                                            <div class="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                                                <i class="fa-solid fa-boxes-stacked text-amber-500 text-[11px]"></i>
+                                                <span>Item / Subtarefa: ${escapeHtml(notif.itemTitle)}</span>
+                                                ${notif.subAssignee ? `<span class="text-[10px] text-slate-400 font-normal">(Resp. Item: ${escapeHtml(notif.subAssignee)})</span>` : ''}
+                                            </div>
+                                        ` : ''}
+                                        <div class="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-900 dark:text-amber-200 font-semibold flex items-start gap-2">
+                                            <i class="fa-solid fa-comment-dots text-amber-500 mt-0.5 shrink-0"></i>
+                                            <span><strong>Motivo / Mensagem:</strong> ${escapeHtml(notif.reason || '')}</span>
+                                        </div>
+                                    </div>
+
+                                    <!-- Histórico de Respostas Vinculadas no Mesmo Aviso -->
+                                    ${replies.length > 0 ? `
+                                        <div class="pl-3 border-l-2 border-indigo-500/40 space-y-1.5 pt-1">
+                                            <div class="text-[10px] font-extrabold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 flex items-center gap-1">
+                                                <i class="fa-solid fa-comments"></i> Respostas Vinculadas (${replies.length}):
+                                            </div>
+                                            ${replies.map(rep => `
+                                                <div class="p-2 rounded-lg bg-slate-100/90 dark:bg-slate-900/70 border border-slate-200/80 dark:border-slate-700/80 text-xs space-y-0.5">
+                                                    <div class="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                                                        <span class="font-bold text-indigo-600 dark:text-indigo-400"><i class="fa-solid fa-reply mr-1 text-[9px]"></i>${escapeHtml(rep.author || 'Usuário')}</span>
+                                                        <span>${formatNotificationDateTime(rep.createdAt)}</span>
+                                                    </div>
+                                                    <p class="text-slate-700 dark:text-slate-200 font-medium whitespace-pre-line">${escapeHtml(rep.text || '')}</p>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    ` : ''}
+
+                                    <!-- Campo para Enviar Resposta Vinculada no Mesmo Aviso -->
+                                    <form onsubmit="handleSendNotificationReply(event, '${escapeHtml(notif.id)}')" class="flex items-center gap-1.5 pt-1">
+                                        <input type="text" id="notifReplyInput_${escapeHtml(notif.id)}" placeholder="Escrever resposta vinculada neste aviso..." class="flex-1 px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs focus:outline-none focus:border-indigo-500">
+                                        <button type="submit" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold shadow-sm transition flex items-center gap-1 shrink-0">
+                                            <i class="fa-solid fa-reply text-[10px]"></i> Responder
+                                        </button>
+                                    </form>
+
+                                    <!-- Barra Inferior de Ações do Aviso -->
+                                    <div class="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60">
+                                        <div class="flex flex-wrap items-center gap-1.5">
+                                            ${notif.taskId ? `
+                                                <button type="button" onclick="openTaskFromNotification('${escapeHtml(notif.id)}')" class="px-2.5 py-1 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300 border border-indigo-500/25 text-[11px] font-bold transition flex items-center gap-1">
+                                                    <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i> Abrir Tarefa / Item
+                                                </button>
+                                            ` : ''}
+                                            ${isWaitingType && !notif.resolved && notif.taskId ? `
+                                                <button type="button" onclick="resumeWaitingItemFromNotification('${escapeHtml(notif.id)}')" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shadow-sm transition flex items-center gap-1" title="Retomar este item (sair de Aguardando)">
+                                                    <i class="fa-solid fa-play text-[9px]"></i> Retomar Item
+                                                </button>
+                                            ` : ''}
+                                        </div>
+
+                                        <div class="flex items-center gap-1.5 ml-auto">
+                                            ${isUnread ? `
+                                                <button type="button" onclick="markSingleNotificationAsRead('${escapeHtml(notif.id)}')" class="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-[11px] font-bold transition flex items-center gap-1">
+                                                    <i class="fa-solid fa-check text-[9px]"></i> Marcar como lido
+                                                </button>
+                                            ` : `
+                                                <button type="button" onclick="markSingleNotificationAsUnread('${escapeHtml(notif.id)}')" class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[11px] font-bold transition flex items-center gap-1" title="Retornar este aviso para o status Não Lido (atualiza também na cópia sincronizada)">
+                                                    <i class="fa-solid fa-envelope text-[9px]"></i> Retornar p/ Não Lido
+                                                </button>
+                                            `}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function handleSendNotificationReply(event, notifId) {
+    event.preventDefault();
+    const notif = appNotifications.find(n => n.id === notifId);
+    if (!notif) return;
+
+    const inp = document.getElementById(`notifReplyInput_${notifId}`);
+    const text = (inp?.value || '').trim();
+    if (!text) {
+        showToast('Digite o texto da resposta.', 'error');
+        return;
+    }
+
+    if (!Array.isArray(notif.replies)) notif.replies = [];
+    notif.replies.push({
+        id: 'rep_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        author: currentAuthor || currentUserLogin || 'Usuário',
+        authorLogin: currentUserLogin || '',
+        text,
+        createdAt: Date.now()
+    });
+
+    // Ao receber uma nova resposta vinculada, retorna para Não Lido para alertar as partes com o mesmo status!
+    notif.isRead = false;
+    notif.readBy = [];
+    notif.updatedAt = Date.now();
+
+    if (inp) inp.value = '';
+    await upsertNotificationToCloud(notif);
+    renderNotificationsModalList();
+    showToast('Resposta vinculada adicionada ao aviso!', 'success');
+}
+
+async function handleCreateManualNotification(event) {
+    event.preventDefault();
+    const taskSel = document.getElementById('manualNotifTaskSelect');
+    const targetSel = document.getElementById('manualNotifTargetSelect');
+    const msgInp = document.getElementById('manualNotifMessageInput');
+    const msg = (msgInp?.value || '').trim();
+    if (!msg) {
+        showToast('Digite a mensagem do aviso.', 'error');
+        return;
+    }
+    const selectedTaskId = (taskSel?.value || '').trim() || null;
+    const taskObj = selectedTaskId ? tasks.find(t => t.id === selectedTaskId) : null;
+    const targetUser = (targetSel?.value || '').trim() || (taskObj?.author || 'Todos da Equipe');
+
+    const notifObj = {
+        id: 'notif_manual_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        type: 'manual_alert',
+        taskId: taskObj ? taskObj.id : null,
+        taskTitle: taskObj ? taskObj.title : '',
+        subIdx: null,
+        itemTitle: '',
+        reason: msg,
+        targetUser,
+        subAssignee: '',
+        triggeredBy: currentAuthor || currentUserLogin || 'Usuário',
+        triggeredByLogin: currentUserLogin || '',
+        keepCreatorCopy: true,
+        isRead: false,
+        readBy: [],
+        resolved: false,
+        replies: [],
+        createdAt: Date.now()
+    };
+    if (msgInp) msgInp.value = '';
+    await upsertNotificationToCloud(notifObj);
+    renderNotificationsModalList();
+    showToast(`Aviso enviado para "${targetUser}" (cópia sincronizada mantida para você)!`, 'success');
+}
+
+async function markSingleNotificationAsRead(notifId) {
+    const notif = appNotifications.find(n => n.id === notifId);
+    if (!notif) return;
+    const myKey = normalizeIdentityStr(currentUserLogin || currentAuthor || 'anon');
+    if (!Array.isArray(notif.readBy)) notif.readBy = [];
+    if (!notif.readBy.map(normalizeIdentityStr).includes(myKey)) {
+        notif.readBy.push(myKey);
+    }
+    notif.isRead = true;
+    notif.readAt = Date.now();
+    await upsertNotificationToCloud(notif);
+    renderNotificationsModalList();
+}
+
+async function markSingleNotificationAsUnread(notifId) {
+    const notif = appNotifications.find(n => n.id === notifId);
+    if (!notif) return;
+    notif.isRead = false;
+    notif.readBy = [];
+    delete notif.readAt;
+    await upsertNotificationToCloud(notif);
+    renderNotificationsModalList();
+    showToast('Aviso retornado para o status Não Lido!', 'info');
+}
+
+async function markAllNotificationsAsRead() {
+    const myKey = normalizeIdentityStr(currentUserLogin || currentAuthor || 'anon');
+    for (const notif of appNotifications) {
+        if (!Array.isArray(notif.readBy)) notif.readBy = [];
+        if (!notif.readBy.map(normalizeIdentityStr).includes(myKey)) {
+            notif.readBy.push(myKey);
+        }
+        notif.isRead = true;
+        await upsertNotificationToCloud(notif);
+    }
+    renderNotificationsModalList();
+    showToast('Todos os avisos foram marcados como lidos!', 'success');
+}
+
+async function clearResolvedNotifications() {
+    const toRemove = appNotifications.filter(n => n.resolved || !isNotificationUnreadShared(n));
+    for (const n of toRemove) {
+        await removeNotificationFromCloud(n.id);
+    }
+    renderNotificationsModalList();
+    showToast('Avisos lidos/resolvidos limpos!', 'info');
+}
+
+async function deleteSingleNotification(notifId) {
+    await removeNotificationFromCloud(notifId);
+    renderNotificationsModalList();
+}
+
+async function openTaskFromNotification(notifId) {
+    const notif = appNotifications.find(n => n.id === notifId);
+    if (!notif || !notif.taskId) return;
+    await markSingleNotificationAsRead(notifId);
+    closeNotificationsModal();
+
+    const task = tasks.find(t => t.id === notif.taskId);
+    if (!task) {
+        showToast('A tarefa vinculada não foi encontrada.', 'error');
+        return;
+    }
+    if (task.archived) {
+        task.archived = false;
+        await upsertTaskToCloud(task);
+    }
+    expandedTaskCardsSet.add(task.id);
+    activeHighlightedTaskId = task.id;
+    renderAll();
+
+    if (notif.subIdx !== null && notif.subIdx !== undefined && notif.subIdx >= 0) {
+        openTaskModalAndFocusSubtask(task.id, notif.subIdx);
+    } else {
+        openTaskModal(task.id);
+    }
+}
+
+async function resumeWaitingItemFromNotification(notifId) {
+    const notif = appNotifications.find(n => n.id === notifId);
+    if (!notif || !notif.taskId) return;
+    const task = tasks.find(t => t.id === notif.taskId);
+    if (!task) return;
+
+    if (notif.subIdx !== null && notif.subIdx !== undefined && task.subtasks && task.subtasks[notif.subIdx]) {
+        task.subtasks[notif.subIdx].waiting = false;
+        task.subtasks[notif.subIdx].waitingReason = '';
+    } else {
+        task.status = 'in_progress';
+        task.waiting = false;
+        task.waitingReason = '';
+    }
+    notif.resolved = true;
+    notif.resolvedAt = Date.now();
+    task.updatedAt = Date.now();
+
+    await upsertNotificationToCloud(notif);
+    await upsertTaskToCloud(task);
+    renderAll();
+    renderNotificationsModalList();
+    showToast('Item retomado com sucesso (saiu de Aguardando)!', 'success');
+}
+
+// =========================================================================
+// ARQUIVAMENTO DE TAREFAS (BOTÃO ARQUIVAR TAREFA + TELA DE ARQUIVADAS)
+// =========================================================================
+async function archiveTask(taskId, event = null) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    if (!hasUserPermission('canEdit') && !hasUserPermission('canChangeStatus')) {
+        showToast('Você não possui permissão para arquivar tarefas.', 'error');
+        return;
+    }
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    task.archived = true;
+    task.archivedAt = Date.now();
+    task.archivedBy = currentAuthor || currentUserLogin || 'Usuário';
+    task.updatedAt = Date.now();
+
+    expandedTaskCardsSet.delete(taskId);
+    if (activeHighlightedTaskId === taskId) activeHighlightedTaskId = null;
+
+    saveLocalCacheOnly();
+    renderAll();
+    updateArchivedAndNotificationsBadges();
+    await upsertTaskToCloud(task);
+    showToast(`Tarefa "${task.title}" arquivada! Acesse o botão "Arquivadas" para consultar ou restaurar.`, 'info');
+}
+
+async function unarchiveTask(taskId) {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    task.archived = false;
+    delete task.archivedAt;
+    task.updatedAt = Date.now();
+
+    saveLocalCacheOnly();
+    renderAll();
+    updateArchivedAndNotificationsBadges();
+    renderArchivedTasksModalList();
+    await upsertTaskToCloud(task);
+    showToast(`Tarefa "${task.title}" restaurada para o quadro ativo!`, 'success');
+}
+
+function openArchivedTasksModal() {
+    const modal = document.getElementById('archivedTasksModal');
+    if (!modal) return;
+    const inp = document.getElementById('archivedSearchInput');
+    if (inp) inp.value = '';
+    renderArchivedTasksModalList();
+    modal.classList.remove('hidden');
+}
+
+function closeArchivedTasksModal() {
+    document.getElementById('archivedTasksModal')?.classList.add('hidden');
+}
+
+function renderArchivedTasksModalList() {
+    const container = document.getElementById('archivedTasksListContainer');
+    const countLbl = document.getElementById('archivedModalCountLabel');
+    if (!container) return;
+
+    const query = (document.getElementById('archivedSearchInput')?.value || '').toLowerCase().trim();
+    const archivedTasks = (tasks || []).filter(t => {
+        if (!t.archived) return false;
+        if (!doesTaskAppearInRoom(t, currentWorkspace)) return false;
+        if (query) {
+            const matchTitle = (t.title || '').toLowerCase().includes(query);
+            const matchAuthor = (t.author || '').toLowerCase().includes(query);
+            const matchDesc = (t.desc || '').toLowerCase().includes(query);
+            if (!matchTitle && !matchAuthor && !matchDesc) return false;
+        }
+        return true;
+    }).sort((a, b) => (b.archivedAt || b.updatedAt || 0) - (a.archivedAt || a.updatedAt || 0));
+
+    if (countLbl) {
+        countLbl.textContent = `${archivedTasks.length} tarefa(s) arquivada(s)`;
+    }
+
+    if (archivedTasks.length === 0) {
+        container.innerHTML = `
+            <div class="p-10 text-center space-y-2.5">
+                <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center text-xl mx-auto">
+                    <i class="fa-solid fa-box-open"></i>
+                </div>
+                <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">Nenhuma tarefa arquivada</h4>
+                <p class="text-xs text-slate-400 max-w-sm mx-auto">
+                    Use o botão <strong><i class="fa-solid fa-box-archive"></i> Arquivar</strong> em qualquer cartão ou linha de tarefa para guardá-la aqui sem perdê-la.
+                </p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = archivedTasks.map(task => {
+        const subs = Array.isArray(task.subtasks) ? task.subtasks : [];
+        const doneSubs = subs.filter(s => s.completed).length;
+        const archDateStr = task.archivedAt ? formatNotificationDateTime(task.archivedAt) : formatCreatedAtDate(task.updatedAt, false);
+
+        return `
+            <div class="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-indigo-500/40 transition">
+                <div class="space-y-1 min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-[10px] font-bold">
+                            <i class="fa-solid fa-box-archive mr-1"></i>Arquivada
+                        </span>
+                        <h4 class="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 truncate" title="${escapeHtml(task.title)}">
+                            ${escapeHtml(task.title)}
+                        </h4>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+                        <span><i class="fa-solid fa-user-check text-indigo-500 mr-1"></i>Resp: <strong>${escapeHtml(task.author || 'Sem responsável')}</strong></span>
+                        <span><i class="fa-regular fa-calendar mr-1"></i>Venc: ${formatDisplayDate(task.dueDate)}</span>
+                        <span><i class="fa-solid fa-boxes-stacked mr-1"></i>Subtarefas: ${doneSubs}/${subs.length}</span>
+                        <span class="text-[10px] text-slate-400">Arquivada em ${archDateStr}</span>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-1.5 shrink-0">
+                    <button type="button" onclick="unarchiveTask('${escapeHtml(task.id)}')" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-sm transition flex items-center gap-1.5" title="Desarquivar e devolver ao quadro de tarefas ativas">
+                        <i class="fa-solid fa-rotate-left text-[10px]"></i> Desarquivar
+                    </button>
+                    <button type="button" onclick="closeArchivedTasksModal(); deleteTask('${escapeHtml(task.id)}')" class="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-500/25 text-xs transition" title="Excluir permanentemente">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Inicializa a Central de Avisos assim que o script carrega e reconecta junto com o Firebase
+setTimeout(() => {
+    initNotificationsRealtimeListener();
+}, 300);

@@ -1,14 +1,14 @@
 // =========================================================================
-// 2. js/storage.js — Persistência 100% Exclusiva no Google Firebase Cloud Firestore
-//    (Zero Armazenamento de Tarefas/Salas/Usuários no Navegador)
+// 2. js/storage.js — Chave Online (Firebase Cloud Firestore) / Offline (Local)
+//    + Pergunta ao Acessar se Deseja Tornar Online
 // =========================================================================
 
-// Memória volátil em execução (espelho exclusivo do Firebase Cloud Firestore)
 let inMemoryRoomsMap = {};
 let inMemoryUsersMap = {};
+let isOnlineModeEnabled = true; // Controlado pela chave Online/Offline e pelo modal ao acessar
 
-// Limpa resíduos antigos de banco de dados do localStorage do navegador
 function purgeLegacyBrowserDatabaseCache() {
+    if (!isOnlineModeEnabled) return; // Em modo Online puro, não acumula banco antigo no navegador
     try {
         const keysToRemove = [];
         for (let i = 0; i < localStorage.length; i++) {
@@ -33,6 +33,15 @@ function purgeLegacyBrowserDatabaseCache() {
  * 3. ROOM CONFIGS (EM MEMÓRIA + FIREBASE FIRESTORE)
  **************************************************************/
 function getLocalRoomConfigs() {
+    if (!isOnlineModeEnabled) {
+        try {
+            const raw = localStorage.getItem(LOCAL_ROOM_CONFIG_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                Object.assign(inMemoryRoomsMap, parsed);
+            }
+        } catch (e) {}
+    }
     return inMemoryRoomsMap;
 }
 
@@ -45,21 +54,30 @@ function saveLocalRoomConfig(roomName, configObj) {
         id: key,
         roomName: (configObj.roomName || roomName).toUpperCase()
     };
+    if (!isOnlineModeEnabled) {
+        try {
+            localStorage.setItem(LOCAL_ROOM_CONFIG_KEY, JSON.stringify(inMemoryRoomsMap));
+        } catch (e) {}
+    }
 }
 
 function removeLocalRoomConfig(roomName) {
     if (!roomName) return;
     const key = String(roomName).toLowerCase();
     delete inMemoryRoomsMap[key];
+    if (!isOnlineModeEnabled) {
+        try {
+            localStorage.setItem(LOCAL_ROOM_CONFIG_KEY, JSON.stringify(inMemoryRoomsMap));
+        } catch (e) {}
+    }
 }
 
-// Converte qualquer ID de tarefa (mesmo que contenha "/" como "pedido_52453/5_17939") em um ID seguro para o Firestore
 function getSafeFirestoreDocId(rawId) {
     return String(rawId || '').trim().replace(/[\/#?\[\]]/g, '_');
 }
 
 /**************************************************************
- * 5. MOTOR 100% FIREBASE CLOUD FIRESTORE (SEM CACHE LOCAL)
+ * 5. MOTOR COM CHAVE ONLINE (FIREBASE) E OFFLINE (LOCAL)
  **************************************************************/
 function getActiveFirebaseConfig() {
     try {
@@ -102,8 +120,68 @@ function parseFlexibleFirebaseConfigInput(rawText) {
     }
 }
 
+/**
+ * Alterna a chave Online / Offline a qualquer momento pelo botão no cabeçalho
+ */
+async function toggleOnlineOfflineMode() {
+    await setOnlineOfflineMode(!isOnlineModeEnabled, true);
+}
+
+/**
+ * Define explicitamente o modo Online (true) ou Offline (false)
+ */
+async function setOnlineOfflineMode(targetOnline, showFeedback = true) {
+    isOnlineModeEnabled = Boolean(targetOnline);
+
+    if (isOnlineModeEnabled) {
+        const ok = initFirebase();
+        if (ok && db) {
+            try {
+                await db.enableNetwork();
+            } catch (e) {}
+            setupFirestoreRealtimeListener();
+            // Se havia tarefas criadas enquanto estava Offline, sincroniza com o Firebase e limpa cache local
+            if (Array.isArray(tasks) && tasks.length > 0) {
+                await syncLocalToCloud();
+            }
+            await fetchTasksViaRestFallback();
+            purgeLegacyBrowserDatabaseCache();
+            updateCloudStatusUI('synced');
+            if (showFeedback) {
+                showToast('Chave ONLINE ativada! Conectado em tempo real ao Firebase Cloud.', 'success');
+            }
+        } else {
+            updateCloudStatusUI('error');
+            if (showFeedback) {
+                showToast('Não foi possível conectar ao Firebase. Verifique a configuração.', 'error');
+            }
+        }
+    } else {
+        // Modo OFFLINE ativado pela chave
+        if (firestoreTasksUnsubscribe) { firestoreTasksUnsubscribe(); firestoreTasksUnsubscribe = null; }
+        if (firestoreUsersUnsubscribe) { firestoreUsersUnsubscribe(); firestoreUsersUnsubscribe = null; }
+        if (firestoreRoomsUnsubscribe) { firestoreRoomsUnsubscribe(); firestoreRoomsUnsubscribe = null; }
+
+        if (db && typeof db.disableNetwork === 'function') {
+            try {
+                await db.disableNetwork();
+            } catch (e) {}
+        }
+        firebaseConnected = false;
+        saveLocalCacheOnly();
+        updateCloudStatusUI('offline');
+        if (showFeedback) {
+            showToast('Chave OFFLINE ativada! O sistema está operando desconectado da nuvem.', 'info');
+        }
+    }
+}
+
 function initFirebase() {
-    purgeLegacyBrowserDatabaseCache();
+    if (!isOnlineModeEnabled) {
+        firebaseConnected = false;
+        updateCloudStatusUI('offline');
+        return false;
+    }
 
     const cfg = getActiveFirebaseConfig();
     if (!cfg || !cfg.apiKey || !cfg.projectId) {
@@ -127,6 +205,7 @@ function initFirebase() {
         }
         db = firebase.firestore();
         firebaseConnected = true;
+        purgeLegacyBrowserDatabaseCache();
         updateCloudStatusUI('synced');
         setupGlobalUsersAndRoomsRealtimeListeners();
         return true;
@@ -143,6 +222,8 @@ function updateCloudStatusUI(state) {
     const badge = document.getElementById('cloudStatusBadge');
     const dot = document.getElementById('cloudStatusDot');
     const text = document.getElementById('cloudStatusText');
+    const track = document.getElementById('onlineOfflineTrack');
+    const thumb = document.getElementById('onlineOfflineThumb');
     const adminBadge = document.getElementById('fbAdminConfigStatusBadge');
 
     if (!badge || !dot || !text) return;
@@ -150,39 +231,56 @@ function updateCloudStatusUI(state) {
     const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     const cfg = getActiveFirebaseConfig();
 
+    if (!isOnlineModeEnabled || state === 'offline' || state === 'local') {
+        if (track) track.className = 'relative inline-flex h-4 w-8 shrink-0 items-center rounded-full bg-slate-400 dark:bg-slate-600 transition-colors duration-200';
+        if (thumb) thumb.className = 'inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform duration-200 translate-x-0.5';
+        badge.className = 'inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-amber-600 dark:text-amber-400';
+        dot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500';
+        text.textContent = 'OFFLINE';
+        badge.title = `Modo OFFLINE ativo (${timeStr}) • Clique na chave para tornar ONLINE no Firebase`;
+        if (adminBadge) {
+            adminBadge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30';
+            adminBadge.innerHTML = `<i class="fa-solid fa-toggle-off mr-1"></i>Modo Offline`;
+        }
+        return;
+    }
+
     if (state === 'connecting') {
-        badge.className = 'hidden md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25 shrink-0 cursor-pointer transition';
+        if (track) track.className = 'relative inline-flex h-4 w-8 shrink-0 items-center rounded-full bg-amber-500 transition-colors duration-200';
+        if (thumb) thumb.className = 'inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform duration-200 translate-x-2';
+        badge.className = 'inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-amber-600 dark:text-amber-400';
         dot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping';
-        text.textContent = 'Conectando ao Firebase...';
-        badge.title = 'Conectando ao Google Firebase Cloud Firestore...';
+        text.textContent = 'CONECTANDO...';
         return;
     }
 
     if (firebaseConnected && db && state !== 'error') {
-        badge.className = 'hidden md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30 shrink-0 cursor-pointer transition';
+        if (track) track.className = 'relative inline-flex h-4 w-8 shrink-0 items-center rounded-full bg-emerald-500 transition-colors duration-200';
+        if (thumb) thumb.className = 'inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform duration-200 translate-x-4';
+        badge.className = 'inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-emerald-600 dark:text-emerald-400';
         dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse';
-        text.textContent = `Firebase (${cfg?.projectId || 'Ativo'})`;
-        badge.title = `100% Nuvem Firebase (${cfg?.projectId}) • Sem armazenamento local no navegador • Última sinc: ${timeStr}`;
+        text.textContent = 'ONLINE (FIREBASE)';
+        badge.title = `Modo ONLINE no Firebase (${cfg?.projectId}) • Última sinc: ${timeStr} • Clique para mudar para Offline`;
         if (adminBadge) {
             adminBadge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30';
-            adminBadge.innerHTML = `<i class="fa-solid fa-cloud-bolt mr-1"></i>100% Firebase (${escapeHtml(cfg?.projectId || 'Ativo')})`;
+            adminBadge.innerHTML = `<i class="fa-solid fa-cloud-bolt mr-1"></i>Online (${escapeHtml(cfg?.projectId || 'Firebase')})`;
         }
     } else {
-        badge.className = 'hidden md:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30 shrink-0 cursor-pointer transition';
+        if (track) track.className = 'relative inline-flex h-4 w-8 shrink-0 items-center rounded-full bg-rose-500 transition-colors duration-200';
+        if (thumb) thumb.className = 'inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform duration-200 translate-x-0.5';
+        badge.className = 'inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-rose-600 dark:text-rose-400';
         dot.className = 'w-1.5 h-1.5 rounded-full bg-rose-500';
-        text.textContent = ' Sem Conexão Firebase';
-        badge.title = 'Sem conexão com o Firebase. Clique para revisar as credenciais do Firebase.';
+        text.textContent = 'ERRO FIREBASE';
         if (adminBadge) {
             adminBadge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30';
-            adminBadge.textContent = 'Desconectado do Firebase';
+            adminBadge.textContent = 'Erro Firebase';
         }
     }
 }
 
 function setupGlobalUsersAndRoomsRealtimeListeners() {
-    if (!db || !firebaseConnected) return;
+    if (!isOnlineModeEnabled || !db || !firebaseConnected) return;
 
-    // Listener em tempo real para Contas de Usuários e Permissões (direto do Firebase)
     if (firestoreUsersUnsubscribe) firestoreUsersUnsubscribe();
     firestoreUsersUnsubscribe = db.collection(USERS_CONFIG_COLLECTION).onSnapshot(snapshot => {
         snapshot.docChanges().forEach(change => {
@@ -201,7 +299,6 @@ function setupGlobalUsersAndRoomsRealtimeListeners() {
         console.warn('Aviso listener de usuários Firestore:', err);
     });
 
-    // Listener em tempo real para Salas criadas (direto do Firebase)
     if (firestoreRoomsUnsubscribe) firestoreRoomsUnsubscribe();
     firestoreRoomsUnsubscribe = db.collection(ROOMS_CONFIG_COLLECTION).onSnapshot(snapshot => {
         snapshot.docChanges().forEach(change => {
@@ -222,8 +319,8 @@ function setupGlobalUsersAndRoomsRealtimeListeners() {
 }
 
 function setupFirestoreRealtimeListener() {
-    if (!db || !firebaseConnected) {
-        updateCloudStatusUI('error');
+    if (!isOnlineModeEnabled || !db || !firebaseConnected) {
+        updateCloudStatusUI(isOnlineModeEnabled ? 'error' : 'offline');
         return;
     }
 
@@ -233,6 +330,7 @@ function setupFirestoreRealtimeListener() {
     }
 
     firestoreTasksUnsubscribe = db.collection(UNIFIED_TASKS_COLLECTION).onSnapshot(snapshot => {
+        if (!isOnlineModeEnabled) return;
         const cloudTasks = [];
         snapshot.forEach(doc => {
             const data = doc.data();
@@ -253,6 +351,13 @@ function setupFirestoreRealtimeListener() {
 }
 
 async function fetchTasksViaRestFallback() {
+    if (!isOnlineModeEnabled) {
+        loadTasksFromLocalCache();
+        renderAll();
+        updateCloudStatusUI('offline');
+        return true;
+    }
+
     if (!db || !firebaseConnected) {
         updateCloudStatusUI('error');
         return false;
@@ -283,8 +388,14 @@ async function upsertTaskToCloud(taskObj) {
     if (!taskObj || !taskObj.id) return false;
     taskObj.updatedAt = Date.now();
 
+    if (!isOnlineModeEnabled) {
+        saveLocalCacheOnly();
+        updateCloudStatusUI('offline');
+        return true;
+    }
+
     if (!db || !firebaseConnected) {
-        showToast('Erro: Firebase não está conectado! A tarefa não pôde ser salva na nuvem.', 'error');
+        showToast('Erro: Firebase não está conectado! Verifique a chave Online/Offline.', 'error');
         updateCloudStatusUI('error');
         return false;
     }
@@ -307,6 +418,12 @@ async function upsertTaskToCloud(taskObj) {
 async function removeTaskFromCloud(taskId) {
     tasks = tasks.filter(t => t.id !== taskId && getSafeFirestoreDocId(t.id) !== getSafeFirestoreDocId(taskId));
 
+    if (!isOnlineModeEnabled) {
+        saveLocalCacheOnly();
+        updateCloudStatusUI('offline');
+        return true;
+    }
+
     if (!db || !firebaseConnected || !taskId) {
         updateCloudStatusUI('error');
         return false;
@@ -328,6 +445,12 @@ async function removeTaskFromCloud(taskId) {
 }
 
 async function syncLocalToCloud() {
+    if (!isOnlineModeEnabled) {
+        saveLocalCacheOnly();
+        updateCloudStatusUI('offline');
+        return true;
+    }
+
     if (!db || !firebaseConnected) {
         showToast('Sem conexão com o Firebase Firestore!', 'error');
         updateCloudStatusUI('error');
@@ -355,7 +478,6 @@ async function syncLocalToCloud() {
     }
 }
 
-// Funções de Configuração do Firebase no Painel do Administrador
 function loadFirebaseConfigIntoModalUI() {
     const inp = document.getElementById('fbConfigJsonInput');
     if (!inp) return;
@@ -365,7 +487,7 @@ function loadFirebaseConfigIntoModalUI() {
     } else {
         inp.value = '';
     }
-    updateCloudStatusUI(firebaseConnected ? 'synced' : 'error');
+    updateCloudStatusUI(isOnlineModeEnabled ? (firebaseConnected ? 'synced' : 'error') : 'offline');
 }
 
 async function saveAndConnectFirebaseFromModal() {
@@ -386,21 +508,17 @@ async function saveAndConnectFirebaseFromModal() {
         } catch (e) {}
     }
 
-    const ok = initFirebase();
-    if (ok) {
-        setupFirestoreRealtimeListener();
-        await fetchTasksViaRestFallback();
-        showToast(`Conectado exclusivamente ao Firebase (${parsed.projectId}) em tempo real!`, 'success');
-    } else {
-        showToast('Não foi possível conectar ao Firebase. Verifique as credenciais informadas.', 'error');
-    }
+    await setOnlineOfflineMode(true, true);
 }
 
 async function disconnectFirebaseAndUseLocal() {
-    showToast('O sistema está configurado para operar 100% no Firebase (armazenamento local no navegador desativado).', 'info');
+    await setOnlineOfflineMode(false, true);
 }
 
 async function pushAllLocalDataToFirebaseNow(silent = false) {
+    if (!isOnlineModeEnabled) {
+        await setOnlineOfflineMode(true, false);
+    }
     if (!db || !firebaseConnected) {
         if (!silent) showToast('Conecte primeiro ao Firebase.', 'error');
         return;
@@ -411,17 +529,24 @@ async function pushAllLocalDataToFirebaseNow(silent = false) {
     }
 }
 
-// Desativado: Não carrega nem salva tarefas no navegador (100% Firebase)
+// Quando ONLINE: não guarda tarefas no navegador. Quando OFFLINE: guarda temporariamente até ficar Online.
 function loadTasksFromLocalCache() {
-    // Intencionalmente vazio: tarefas vêm exclusivamente do Firebase Cloud Firestore
+    if (isOnlineModeEnabled) return;
+    try {
+        const raw = localStorage.getItem('taskflow_pro_unified_tasks_v8');
+        if (raw) tasks = JSON.parse(raw) || [];
+    } catch (e) {}
 }
 
 function saveLocalCacheOnly() {
-    // Intencionalmente vazio: tarefas são salvas exclusivamente no Firebase Cloud Firestore
+    if (isOnlineModeEnabled) return;
+    try {
+        localStorage.setItem('taskflow_pro_unified_tasks_v8', JSON.stringify(tasks));
+    } catch (e) {}
 }
 
 /**************************************************************
- * 10. BACKUP JSON (EXPORTAÇÃO & IMPORTAÇÃO DIRETA NO FIREBASE)
+ * 10. BACKUP JSON (EXPORTAÇÃO & IMPORTAÇÃO)
  **************************************************************/
 function exportTasksJSON() {
     if (!hasUserPermission('canExportImport')) {
@@ -457,7 +582,7 @@ function importTasksJSON(e) {
                 pendingImportedJsonTasks = imported;
                 const summaryEl = document.getElementById('jsonImportChoiceModal') ? document.getElementById('jsonImportSummaryText') : null;
                 if (summaryEl) {
-                    summaryEl.innerHTML = `O arquivo <strong>${escapeHtml(fileName)}</strong> contém <strong>${imported.length} tarefa(s)</strong> (atualmente existem <strong>${tasks.length} tarefa(s)</strong> no Firebase). Deseja acrescentar às atuais ou substituir tudo no Firebase?`;
+                    summaryEl.innerHTML = `O arquivo <strong>${escapeHtml(fileName)}</strong> contém <strong>${imported.length} tarefa(s)</strong> (atualmente existem <strong>${tasks.length} tarefa(s)</strong>). Confirme abaixo para acrescentá-las às tarefas existentes:`;
                 }
                 document.getElementById('jsonImportChoiceModal').classList.remove('hidden');
             } else {
@@ -484,8 +609,8 @@ async function executePendingJsonImport(mode) {
     const importedList = pendingImportedJsonTasks;
     closeJsonImportChoiceModal();
 
-    if (!db || !firebaseConnected) {
-        showToast('Erro: Sem conexão com o Firebase! Não é possível importar sem conexão com o banco.', 'error');
+    if (isOnlineModeEnabled && (!db || !firebaseConnected)) {
+        showToast('Erro: Sem conexão com o Firebase! Ative a conexão ou mude a chave para Offline.', 'error');
         return;
     }
 
@@ -506,24 +631,7 @@ async function executePendingJsonImport(mode) {
         };
     };
 
-    if (mode === 'replace') {
-        const oldIds = tasks.map(t => t.id);
-        tasks = importedList.map((t, idx) => {
-            const safeId = getSafeFirestoreDocId(t.id || ('task_imp_' + idx + '_' + nowTs));
-            return {
-                ...normalizeImportedTask(t, idx, safeId),
-                manualOrder: idx
-            };
-        });
-        renderAll();
-        try {
-            await Promise.all(oldIds.map(oid => db.collection(UNIFIED_TASKS_COLLECTION).doc(getSafeFirestoreDocId(oid)).delete().catch(() => {})));
-        } catch (e) {}
-        const ok = await syncLocalToCloud();
-        if (ok) {
-            showToast(`Lista substituída por ${tasks.length} tarefa(s) diretamente no Firebase!`, 'success');
-        }
-    } else {
+    {
         const existingIds = new Set(tasks.map(t => getSafeFirestoreDocId(t.id)));
         let addedCount = 0;
 
@@ -542,7 +650,7 @@ async function executePendingJsonImport(mode) {
         renderAll();
         const ok = await syncLocalToCloud();
         if (ok) {
-            showToast(`${addedCount} tarefa(s) importada(s) e gravada(s) no Firebase (Total: ${tasks.length})!`, 'success');
+            showToast(`${addedCount} tarefa(s) importada(s) (${isOnlineModeEnabled ? 'gravadas no Firebase' : 'modo Offline'} • Total: ${tasks.length})!`, 'success');
         }
     }
 }

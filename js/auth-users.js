@@ -6,6 +6,15 @@
  * 3.1 USER & ADMIN ACCOUNTS STORAGE (CLOUD + LOCAL)
  **************************************************************/
 function getLocalUsersMap() {
+    if (typeof isOnlineModeEnabled !== 'undefined' && !isOnlineModeEnabled) {
+        try {
+            const raw = localStorage.getItem(LOCAL_USERS_CONFIG_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                Object.assign(inMemoryUsersMap, parsed);
+            }
+        } catch (e) {}
+    }
     return typeof inMemoryUsersMap !== 'undefined' ? inMemoryUsersMap : {};
 }
 
@@ -17,12 +26,22 @@ function saveLocalUserAccount(usernameKey, userObj) {
         ...userObj,
         id: key
     };
+    if (typeof isOnlineModeEnabled !== 'undefined' && !isOnlineModeEnabled) {
+        try {
+            localStorage.setItem(LOCAL_USERS_CONFIG_KEY, JSON.stringify(inMemoryUsersMap));
+        } catch (e) {}
+    }
 }
 
 function removeLocalUserAccount(usernameKey) {
     if (!usernameKey || typeof inMemoryUsersMap === 'undefined') return;
     const key = String(usernameKey).toLowerCase();
     delete inMemoryUsersMap[key];
+    if (typeof isOnlineModeEnabled !== 'undefined' && !isOnlineModeEnabled) {
+        try {
+            localStorage.setItem(LOCAL_USERS_CONFIG_KEY, JSON.stringify(inMemoryUsersMap));
+        } catch (e) {}
+    }
 }
 
 async function fetchAllUsersFromCloud() {

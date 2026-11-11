@@ -32,7 +32,7 @@
 }
 
 /* ==========================================================
-   MÓDULO DE LAYOUT DINÂMICO (TOPO, ESQUERDA, DIREITA) + RECOLHIMENTO (v3)
+   MÓDULO DE LAYOUT DINÂMICO (TOPO, ESQUERDA, DIREITA) + RECOLHIMENTO
    ========================================================== */
 #expandSidebarLeftBtn, #expandSidebarRightBtn {
     display: none;
@@ -49,13 +49,13 @@
         flex-direction: row-reverse;
     }
     
-    /* Transforma o cabeçalho numa barra lateral fixa sem cortar menus flutuantes */
+    /* Transforma o cabeçalho numa barra lateral fixa e organizada */
     body[data-layout="left"] header, 
     body[data-layout="right"] header {
-        width: 320px;
+        width: 300px;
         min-height: 100vh;
         height: auto;
-        overflow: visible !important; /* Permite que os menus dropdown saiam para fora da barra sem ficarem encobertos */
+        overflow: visible !important;
         position: sticky;
         top: 0;
         z-index: 40;
@@ -74,10 +74,10 @@
 
     /* --- ESTILOS DE RECOLHIMENTO (COLLAPSED) --- */
     body[data-sidebar="collapsed"][data-layout="left"] header {
-        margin-left: -320px;
+        margin-left: -300px;
     }
     body[data-sidebar="collapsed"][data-layout="right"] header {
-        margin-right: -320px;
+        margin-right: -300px;
     }
 
     /* Mostrar botão flutuante quando recolhido */
@@ -101,33 +101,49 @@
         transform: rotate(180deg);
     }
 
-    /* Empilha os elementos do cabeçalho verticalmente */
+    /* Empilha os elementos do cabeçalho verticalmente com espaçamento uniforme */
     body[data-layout="left"] header > div,
     body[data-layout="right"] header > div {
         display: flex;
         flex-direction: column;
-        gap: 1rem;
-        padding: 1rem !important;
+        gap: 0.75rem;
+        padding: 0.9rem !important;
     }
 
-    /* Quebra o alinhamento horizontal (Linha 1 e Linha 2) */
     body[data-layout="left"] header > div > div,
     body[data-layout="right"] header > div > div {
         flex-direction: column !important;
         align-items: stretch !important;
         width: 100%;
-        gap: 0.85rem;
+        gap: 0.65rem;
     }
 
-    /* --- CORREÇÃO 1: SEPARAR LOGO DO SELETOR DE SALAS (SEM SOBREPOSIÇÃO) --- */
+    /* --- BLOCO 1 DA SIDEBAR: LOGO + CHAVE ONLINE/OFFLINE + SELETOR DE SALA --- */
     body[data-layout="left"] #headerBrandAndRoomGroup,
     body[data-layout="right"] #headerBrandAndRoomGroup {
         display: flex !important;
-        flex-wrap: wrap !important;
-        align-items: center !important;
-        justify-content: space-between !important;
-        gap: 0.5rem !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 0.55rem !important;
         width: 100% !important;
+    }
+
+    body[data-layout="left"] #headerLogoTitleBox,
+    body[data-layout="right"] #headerLogoTitleBox {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        gap: 0.6rem !important;
+        width: 100% !important;
+        padding-bottom: 0.15rem;
+    }
+
+    /* Chave Online/Offline ocupa 100% da largura na barra lateral de forma alinhada */
+    body[data-layout="left"] #headerOnlineOfflineGroup,
+    body[data-layout="right"] #headerOnlineOfflineGroup {
+        width: 100% !important;
+        justify-content: space-between !important;
+        padding: 0.45rem 0.75rem !important;
     }
 
     /* Esconde a barra divisória "|" na lateral */
@@ -136,12 +152,10 @@
         display: none !important;
     }
 
-    /* Coloca o seletor de salas numa linha exclusiva abaixo do logo ocupando 100% da largura */
+    /* Seletor de salas ocupando 100% da largura */
     body[data-layout="left"] #headerRoomControlGroup,
     body[data-layout="right"] #headerRoomControlGroup {
-        order: 10;
         width: 100% !important;
-        margin-top: 0.25rem;
     }
 
     body[data-layout="left"] #headerRoomBtn,
@@ -161,119 +175,135 @@
         flex: 1;
     }
 
-    /* --- ORGANIZAÇÃO DOS BOTÕES DE AÇÃO E ÍCONES (GRELHA 4 COLUNAS) --- */
-    body[data-layout="left"] header .ml-auto,
-    body[data-layout="right"] header .ml-auto {
+    /* --- BLOCO 2 DA SIDEBAR: AÇÕES, 4 ÍCONES SIMÉTRICOS E PERFIL --- */
+    body[data-layout="left"] #headerActionsAndProfileGroup,
+    body[data-layout="right"] #headerActionsAndProfileGroup {
         margin-left: 0 !important;
         display: grid !important;
         grid-template-columns: repeat(4, 1fr) !important;
-        gap: 0.5rem !important;
+        gap: 0.45rem !important;
         width: 100% !important;
     }
 
-    body[data-layout="left"] header .ml-auto > div.relative.group,
-    body[data-layout="right"] header .ml-auto > div.relative.group {
-        width: 100%;
-    }
-
-    /* 1. Importar (.XLS) -> 4 colunas */
+    /* Importar (.XLS) e Nova Tarefa ocupando 100% da largura (4 colunas) */
     body[data-layout="left"] #importExcelHeaderBtn,
-    body[data-layout="right"] #importExcelHeaderBtn {
-        grid-column: span 4;
-        justify-content: center;
-        width: 100%;
-        padding: 0.55rem;
-    }
-
-    /* 3. Nova Tarefa -> 4 colunas */
+    body[data-layout="right"] #importExcelHeaderBtn,
     body[data-layout="left"] #newTaskHeaderBtn,
     body[data-layout="right"] #newTaskHeaderBtn {
-        grid-column: span 4;
-        justify-content: center;
-        width: 100%;
-        padding: 0.55rem;
-    }
-
-    /* Botões de ícone (Backup, Tema, Layout, Recolher) -> 1 coluna cada */
-    body[data-layout="left"] header .ml-auto > div.relative.group:not(:last-child) > button,
-    body[data-layout="right"] header .ml-auto > div.relative.group:not(:last-child) > button,
-    body[data-layout="left"] header .ml-auto > button.w-8,
-    body[data-layout="right"] header .ml-auto > button.w-8 {
+        grid-column: span 4 !important;
+        justify-content: center !important;
         width: 100% !important;
-        height: 2.4rem !important;
+        padding: 0.55rem !important;
     }
 
-    /* Perfil do Usuário -> 4 colunas */
-    body[data-layout="left"] header .ml-auto > div:last-child,
-    body[data-layout="right"] header .ml-auto > div:last-child {
-        grid-column: span 4;
-    }
-    body[data-layout="left"] header .ml-auto > div:last-child > button,
-    body[data-layout="right"] header .ml-auto > div:last-child > button {
-        width: 100%;
-        justify-content: space-between;
-        padding: 0.45rem 0.75rem;
+    /* Os 4 botões de ícone (Backup, Tema, Layout, Recolher) com largura 100% idêntica (1 coluna cada) */
+    body[data-layout="left"] #backupDropdownWrapper,
+    body[data-layout="right"] #backupDropdownWrapper,
+    body[data-layout="left"] #layoutDropdownWrapper,
+    body[data-layout="right"] #layoutDropdownWrapper {
+        grid-column: span 1 !important;
+        width: 100% !important;
     }
 
-    /* --- CORREÇÃO 2: MENUS DROPDOWN NUNCA ENCOBERTOS --- */
-    /* Abre os menus suspensos limpa e diretamente abaixo/dentro da largura da barra com z-index máximo */
+    body[data-layout="left"] #backupDropdownBtn,
+    body[data-layout="right"] #backupDropdownBtn,
+    body[data-layout="left"] #themeToggleBtn,
+    body[data-layout="right"] #themeToggleBtn,
+    body[data-layout="left"] #layoutDropdownBtn,
+    body[data-layout="right"] #layoutDropdownBtn,
+    body[data-layout="left"] #sidebarCollapseBtn,
+    body[data-layout="right"] #sidebarCollapseBtn {
+        width: 100% !important;
+        height: 2.35rem !important;
+    }
+
+    /* Perfil do Usuário -> 4 colunas (100% largura) */
+    body[data-layout="left"] #userProfileDropdownWrapper,
+    body[data-layout="right"] #userProfileDropdownWrapper {
+        grid-column: span 4 !important;
+        width: 100% !important;
+    }
+    body[data-layout="left"] #userProfileDropdownWrapper > button,
+    body[data-layout="right"] #userProfileDropdownWrapper > button {
+        width: 100% !important;
+        justify-content: space-between !important;
+        padding: 0.45rem 0.75rem !important;
+    }
+
+    /* Menus Dropdown flutuantes nunca cortados */
     body[data-layout="left"] header .relative > div.absolute,
     body[data-layout="right"] header .relative > div.absolute {
         left: 0 !important;
         right: auto !important;
         top: 100% !important;
         margin-top: 0.25rem !important;
-        width: 280px !important;
+        width: 268px !important;
         z-index: 9999 !important;
     }
 
-    /* --- CORREÇÃO 3: BARRA DE FILTROS E BOTÕES FINAIS SEM CORTAR --- */
+    /* --- BLOCO 3 DA SIDEBAR: FILTRO DE SUBTAREFAS + EXPANDIR/RECOLHER NA MESMA LINHA + VISTAS --- */
     body[data-layout="left"] #headerFiltersToolbar,
     body[data-layout="right"] #headerFiltersToolbar {
         display: flex !important;
-        flex-wrap: wrap !important;
-        justify-content: space-between !important;
+        flex-direction: column !important;
+        align-items: stretch !important;
         gap: 0.5rem !important;
         width: 100% !important;
     }
 
-    body[data-layout="left"] #headerFiltersToolbar > div.relative,
-    body[data-layout="right"] #headerFiltersToolbar > div.relative,
-    body[data-layout="left"] #headerFiltersToolbar > select,
-    body[data-layout="right"] #headerFiltersToolbar > select {
-        max-width: 100% !important;
+    
+    body[data-layout="left"] #headerAlertsAndArchiveRow,
+    body[data-layout="right"] #headerAlertsAndArchiveRow {
+        display: grid !important;
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 0.4rem !important;
         width: 100% !important;
-        flex: 0 0 100% !important;
     }
 
-    /* Os 3 controlos inferiores (Concluídas, Expandir, Kanban/Lista) ficam perfeitamente alinhados dentro da barra */
-    body[data-layout="left"] #headerFiltersToolbar > label,
-    body[data-layout="right"] #headerFiltersToolbar > label {
-        flex: 1 1 auto;
-        justify-content: center;
+    body[data-layout="left"] #headerNotificationsBtn,
+    body[data-layout="right"] #headerNotificationsBtn,
+    body[data-layout="left"] #headerArchivedTasksBtn,
+    body[data-layout="right"] #headerArchivedTasksBtn {
+        width: 100% !important;
+        justify-content: center !important;
+        padding: 0.45rem 0.5rem !important;
     }
 
-    body[data-layout="left"] #headerFiltersToolbar > div.inline-flex:last-child,
-    body[data-layout="right"] #headerFiltersToolbar > div.inline-flex:last-child {
-        width: 100%;
-        justify-content: center;
+    body[data-layout="left"] #headerSubtaskAndExpandRow,
+    body[data-layout="right"] #headerSubtaskAndExpandRow {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 0.4rem !important;
+        width: 100% !important;
     }
 
-    body[data-layout="left"] #headerFiltersToolbar > div.inline-flex:last-child > button,
-    body[data-layout="right"] #headerFiltersToolbar > div.inline-flex:last-child > button {
-        flex: 1;
-        justify-content: center;
-        padding-top: 0.35rem;
-        padding-bottom: 0.35rem;
+    body[data-layout="left"] #hideCompletedSubtasksLabel,
+    body[data-layout="right"] #hideCompletedSubtasksLabel {
+        flex: 1 1 auto !important;
+        justify-content: flex-start !important;
+        padding: 0.4rem 0.65rem !important;
     }
 
-    /* Pílula de métricas */
-    body[data-layout="left"] header .no-scrollbar,
-    body[data-layout="right"] header .no-scrollbar {
-        flex-wrap: wrap;
-        justify-content: flex-start;
-        width: 100%;
-        padding: 0.5rem;
+    body[data-layout="left"] #headerExpandCollapseGroup,
+    body[data-layout="right"] #headerExpandCollapseGroup {
+        flex: 0 0 auto !important;
+        padding: 0.2rem !important;
+    }
+
+    body[data-layout="left"] #headerViewSwitcherGroup,
+    body[data-layout="right"] #headerViewSwitcherGroup {
+        display: grid !important;
+        grid-template-columns: repeat(3, 1fr) !important;
+        width: 100% !important;
+        padding: 0.2rem !important;
+    }
+
+    body[data-layout="left"] #headerViewSwitcherGroup > button,
+    body[data-layout="right"] #headerViewSwitcherGroup > button {
+        justify-content: center !important;
+        padding-top: 0.4rem !important;
+        padding-bottom: 0.4rem !important;
     }
 }
 

@@ -203,6 +203,7 @@ const PRIORITY_META = {
 const STATUS_META = {
     todo:        { label: 'A Fazer',       icon: 'fa-regular fa-circle',        color: 'text-slate-500' },
     in_progress: { label: 'Em Andamento',  icon: 'fa-solid fa-spinner',         color: 'text-indigo-500' },
+    waiting:     { label: 'Aguardando',    icon: 'fa-solid fa-circle-pause',    color: 'text-amber-500' },
     done:        { label: 'Concluído',     icon: 'fa-solid fa-circle-check',    color: 'text-emerald-500' }
 };
 
