@@ -1,0 +1,344 @@
+/* TaskFlow Pro Engenharia — Estilos Visuais, Scrollbars e Animações */
+/* Custom Scrollbar & Drag Styles */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.1);
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.4);
+    border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.7);
+}
+.dragging {
+    opacity: 0.45;
+    transform: scale(0.98);
+}
+.drag-over {
+    background-color: rgba(99, 102, 241, 0.08) !important;
+    border-color: #6366f1 !important;
+    border-style: dashed !important;
+}
+@keyframes pulse-subtle {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+.animate-pulse-subtle {
+    animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ==========================================================
+   MÓDULO DE LAYOUT DINÂMICO (TOPO, ESQUERDA, DIREITA) + RECOLHIMENTO (v3)
+   ========================================================== */
+#expandSidebarLeftBtn, #expandSidebarRightBtn {
+    display: none;
+}
+
+@media (min-width: 1024px) {
+    body[data-layout="left"], 
+    body[data-layout="right"] {
+        flex-direction: row;
+        align-items: flex-start;
+    }
+    
+    body[data-layout="right"] {
+        flex-direction: row-reverse;
+    }
+    
+    /* Transforma o cabeçalho numa barra lateral fixa sem cortar menus flutuantes */
+    body[data-layout="left"] header, 
+    body[data-layout="right"] header {
+        width: 320px;
+        min-height: 100vh;
+        height: auto;
+        overflow: visible !important; /* Permite que os menus dropdown saiam para fora da barra sem ficarem encobertos */
+        position: sticky;
+        top: 0;
+        z-index: 40;
+        border-bottom: none;
+        transition: margin 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        flex-shrink: 0;
+    }
+    
+    body[data-layout="left"] header {
+        border-right: 1px solid rgba(148, 163, 184, 0.25);
+    }
+    
+    body[data-layout="right"] header {
+        border-left: 1px solid rgba(148, 163, 184, 0.25);
+    }
+
+    /* --- ESTILOS DE RECOLHIMENTO (COLLAPSED) --- */
+    body[data-sidebar="collapsed"][data-layout="left"] header {
+        margin-left: -320px;
+    }
+    body[data-sidebar="collapsed"][data-layout="right"] header {
+        margin-right: -320px;
+    }
+
+    /* Mostrar botão flutuante quando recolhido */
+    body[data-sidebar="collapsed"][data-layout="left"] #expandSidebarLeftBtn {
+        display: flex;
+        transform: translateX(0) translateY(-50%);
+    }
+    body[data-sidebar="collapsed"][data-layout="right"] #expandSidebarRightBtn {
+        display: flex;
+        transform: translateX(0) translateY(-50%);
+    }
+
+    /* Esconder o botão "Recolher" no layout Topo e inverter seta na direita */
+    body[data-layout="top"] .collapse-btn-sidebar {
+        display: none !important;
+    }
+    body[data-layout="left"] .collapse-btn-sidebar #collapseIcon {
+        transform: rotate(0deg);
+    }
+    body[data-layout="right"] .collapse-btn-sidebar #collapseIcon {
+        transform: rotate(180deg);
+    }
+
+    /* Empilha os elementos do cabeçalho verticalmente */
+    body[data-layout="left"] header > div,
+    body[data-layout="right"] header > div {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        padding: 1rem !important;
+    }
+
+    /* Quebra o alinhamento horizontal (Linha 1 e Linha 2) */
+    body[data-layout="left"] header > div > div,
+    body[data-layout="right"] header > div > div {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        width: 100%;
+        gap: 0.85rem;
+    }
+
+    /* --- CORREÇÃO 1: SEPARAR LOGO DO SELETOR DE SALAS (SEM SOBREPOSIÇÃO) --- */
+    body[data-layout="left"] #headerBrandAndRoomGroup,
+    body[data-layout="right"] #headerBrandAndRoomGroup {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: 0.5rem !important;
+        width: 100% !important;
+    }
+
+    /* Esconde a barra divisória "|" na lateral */
+    body[data-layout="left"] #headerBrandAndRoomGroup > span.text-slate-300,
+    body[data-layout="right"] #headerBrandAndRoomGroup > span.text-slate-300 {
+        display: none !important;
+    }
+
+    /* Coloca o seletor de salas numa linha exclusiva abaixo do logo ocupando 100% da largura */
+    body[data-layout="left"] #headerRoomControlGroup,
+    body[data-layout="right"] #headerRoomControlGroup {
+        order: 10;
+        width: 100% !important;
+        margin-top: 0.25rem;
+    }
+
+    body[data-layout="left"] #headerRoomBtn,
+    body[data-layout="right"] #headerRoomBtn,
+    body[data-layout="left"] #headerAdminRoomWrapper,
+    body[data-layout="right"] #headerAdminRoomWrapper {
+        width: 100% !important;
+        justify-content: space-between !important;
+        padding: 0.5rem 0.75rem !important;
+    }
+
+    body[data-layout="left"] #headerRoomBadge,
+    body[data-layout="right"] #headerRoomBadge,
+    body[data-layout="left"] #headerQuickRoomSelect,
+    body[data-layout="right"] #headerQuickRoomSelect {
+        max-width: 100% !important;
+        flex: 1;
+    }
+
+    /* --- ORGANIZAÇÃO DOS BOTÕES DE AÇÃO E ÍCONES (GRELHA 4 COLUNAS) --- */
+    body[data-layout="left"] header .ml-auto,
+    body[data-layout="right"] header .ml-auto {
+        margin-left: 0 !important;
+        display: grid !important;
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 0.5rem !important;
+        width: 100% !important;
+    }
+
+    body[data-layout="left"] header .ml-auto > div.relative.group,
+    body[data-layout="right"] header .ml-auto > div.relative.group {
+        width: 100%;
+    }
+
+    /* 1. Importar (.XLS) -> 4 colunas */
+    body[data-layout="left"] #importExcelHeaderBtn,
+    body[data-layout="right"] #importExcelHeaderBtn {
+        grid-column: span 4;
+        justify-content: center;
+        width: 100%;
+        padding: 0.55rem;
+    }
+
+    /* 3. Nova Tarefa -> 4 colunas */
+    body[data-layout="left"] #newTaskHeaderBtn,
+    body[data-layout="right"] #newTaskHeaderBtn {
+        grid-column: span 4;
+        justify-content: center;
+        width: 100%;
+        padding: 0.55rem;
+    }
+
+    /* Botões de ícone (Backup, Tema, Layout, Recolher) -> 1 coluna cada */
+    body[data-layout="left"] header .ml-auto > div.relative.group:not(:last-child) > button,
+    body[data-layout="right"] header .ml-auto > div.relative.group:not(:last-child) > button,
+    body[data-layout="left"] header .ml-auto > button.w-8,
+    body[data-layout="right"] header .ml-auto > button.w-8 {
+        width: 100% !important;
+        height: 2.4rem !important;
+    }
+
+    /* Perfil do Usuário -> 4 colunas */
+    body[data-layout="left"] header .ml-auto > div:last-child,
+    body[data-layout="right"] header .ml-auto > div:last-child {
+        grid-column: span 4;
+    }
+    body[data-layout="left"] header .ml-auto > div:last-child > button,
+    body[data-layout="right"] header .ml-auto > div:last-child > button {
+        width: 100%;
+        justify-content: space-between;
+        padding: 0.45rem 0.75rem;
+    }
+
+    /* --- CORREÇÃO 2: MENUS DROPDOWN NUNCA ENCOBERTOS --- */
+    /* Abre os menus suspensos limpa e diretamente abaixo/dentro da largura da barra com z-index máximo */
+    body[data-layout="left"] header .relative > div.absolute,
+    body[data-layout="right"] header .relative > div.absolute {
+        left: 0 !important;
+        right: auto !important;
+        top: 100% !important;
+        margin-top: 0.25rem !important;
+        width: 280px !important;
+        z-index: 9999 !important;
+    }
+
+    /* --- CORREÇÃO 3: BARRA DE FILTROS E BOTÕES FINAIS SEM CORTAR --- */
+    body[data-layout="left"] #headerFiltersToolbar,
+    body[data-layout="right"] #headerFiltersToolbar {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        justify-content: space-between !important;
+        gap: 0.5rem !important;
+        width: 100% !important;
+    }
+
+    body[data-layout="left"] #headerFiltersToolbar > div.relative,
+    body[data-layout="right"] #headerFiltersToolbar > div.relative,
+    body[data-layout="left"] #headerFiltersToolbar > select,
+    body[data-layout="right"] #headerFiltersToolbar > select {
+        max-width: 100% !important;
+        width: 100% !important;
+        flex: 0 0 100% !important;
+    }
+
+    /* Os 3 controlos inferiores (Concluídas, Expandir, Kanban/Lista) ficam perfeitamente alinhados dentro da barra */
+    body[data-layout="left"] #headerFiltersToolbar > label,
+    body[data-layout="right"] #headerFiltersToolbar > label {
+        flex: 1 1 auto;
+        justify-content: center;
+    }
+
+    body[data-layout="left"] #headerFiltersToolbar > div.inline-flex:last-child,
+    body[data-layout="right"] #headerFiltersToolbar > div.inline-flex:last-child {
+        width: 100%;
+        justify-content: center;
+    }
+
+    body[data-layout="left"] #headerFiltersToolbar > div.inline-flex:last-child > button,
+    body[data-layout="right"] #headerFiltersToolbar > div.inline-flex:last-child > button {
+        flex: 1;
+        justify-content: center;
+        padding-top: 0.35rem;
+        padding-bottom: 0.35rem;
+    }
+
+    /* Pílula de métricas */
+    body[data-layout="left"] header .no-scrollbar,
+    body[data-layout="right"] header .no-scrollbar {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        width: 100%;
+        padding: 0.5rem;
+    }
+}
+
+
+/* ==========================================================
+   DIMENSIONAMENTO LATERAL INTERATIVO DAS JANELAS SUSPENSAS
+   (Modais e Menus Suspensos / Dropdowns)
+   ========================================================== */
+.tf-resizable-modal-box {
+    position: relative !important;
+    max-width: 96vw !important;
+    min-width: 320px !important;
+    transition: box-shadow 0.2s ease;
+}
+
+.tf-modal-resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 14px;
+    z-index: 80;
+    cursor: ew-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+    user-select: none;
+}
+
+.tf-resizable-modal-box:hover .tf-modal-resize-handle,
+.tf-modal-resize-handle.is-resizing {
+    opacity: 1;
+}
+
+.tf-modal-resize-handle:hover,
+.tf-modal-resize-handle.is-resizing {
+    background-color: rgba(99, 102, 241, 0.16);
+}
+
+.tf-modal-resize-handle-left {
+    left: 0;
+    border-top-left-radius: 1rem;
+    border-bottom-left-radius: 1rem;
+}
+
+.tf-modal-resize-handle-right {
+    right: 0;
+    border-top-right-radius: 1rem;
+    border-bottom-right-radius: 1rem;
+}
+
+.tf-modal-resize-grip {
+    width: 4px;
+    height: 40px;
+    border-radius: 9999px;
+    background-color: rgba(99, 102, 241, 0.65);
+    box-shadow: 0 0 6px rgba(99, 102, 241, 0.45);
+    pointer-events: none;
+}
+
+/* Permite também redimensionar lateralmente os menus dropdown suspensos */
+header .relative > div.absolute {
+    resize: horizontal;
+    overflow: auto;
+    min-width: 190px;
+    max-width: 90vw;
+}
