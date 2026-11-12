@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TaskFlow Pro Engenharia — Controle de Pedidos e Tarefas (100% Firebase Cloud)</title>
     <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="text/javascript" src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=svqzbPdENLmlfSjz2SNcSEGcPzjxeDHYbj0-RwI80B9R92OBb_1aDCEExwaOxZutng_GQHAjT4KAn_5PcqS12AbjYQcGBMuaQJ6isoBAFbxFUwzqoroDW8WxGwc-SDXD5T1ejWTNoVx_LTuVeliV_tSyck3sUpqK_fzYeqfUUXqeOtLHf5Ih80u4pWxPvG6pcXIMEJR8MngBSkHgKiNtGvdrgnYAjHOe8MyDLlX85QRbUOCsZEpJo51PjQk4Q1weonz04VMz9llJlJ3DktWnnnqIGvSZ_DD2KzT54VAWcAF9T2JIMx_fDS9hfzakxM24" charset="UTF-8"></script><script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <!-- Google Fonts: Inter -->
@@ -394,6 +394,10 @@
                             <span id="modalTotalHoursBadge" class="px-2 py-0.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/25 text-[11px] font-extrabold">
                                 <i class="fa-regular fa-clock mr-1"></i>Total: 0.0h (0.0d)
                             </span>
+                            <button type="button" id="groupModalSubtasksBtn" onclick="groupSelectedModalSubtasks()" class="hidden px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shadow-sm transition flex items-center gap-1.5" title="Agrupar as subtarefas marcadas na lista abaixo em uma única subtarefa">
+                                <i class="fa-solid fa-object-group text-[10px]"></i>
+                                <span>Agrupar Selecionadas (<span id="groupModalSubtasksCount">0</span>)</span>
+                            </button>
                             <button type="button" onclick="autoDistributeModalSubtaskHours('macro')" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold shadow-sm transition flex items-center gap-1.5" title="Distribuir Tempo por Tarefa Macro ou Horas por Subtarefa">
                                 <i class="fa-solid fa-stopwatch text-[10px]"></i>
                                 <span>Distribuir Tempo (Macro / Subtarefa)</span>
@@ -1133,6 +1137,10 @@
                         <div class="flex flex-wrap items-center gap-2 text-xs">
                             <input type="hidden" id="excelMacroTotalHoursInput">
                             <input type="hidden" id="excelBatchSubtaskHoursInput">
+                            <button type="button" onclick="groupSelectedExcelItems()" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold shadow-sm transition flex items-center gap-1.5" title="Agrupar todos os itens marcados em uma única subtarefa">
+                                <i class="fa-solid fa-object-group text-[10px]"></i>
+                                <span>Agrupar Itens Marcados</span>
+                            </button>
                             <button type="button" onclick="distributeExcelPreviewHours(false)" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold shadow-sm transition flex items-center gap-1.5" title="Abrir janela para distribuir Tempo da Tarefa Macro ou Horas por Subtarefa">
                                 <i class="fa-solid fa-stopwatch text-[10px]"></i>
                                 <span>Distribuir Tempo (Macro / Subtarefa)</span>
@@ -1202,15 +1210,28 @@
                     <textarea id="waitingReasonModalInput" rows="3" required placeholder="Descreva o motivo pelo qual está aguardando (ex: Aguardando aprovação do cliente, falta de matéria-prima, revisão de medidas...)" class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-amber-500 text-xs font-medium text-slate-800 dark:text-slate-100 resize-y"></textarea>
                 </div>
 
-                <!-- Sugestões rápidas de motivo -->
+                <!-- Sugestões rápidas de motivo (Tags com cores diferenciadas) -->
                 <div class="space-y-1.5">
-                    <span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Sugestões Rápidas:</span>
+                    <span class="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Tags / Sugestões Rápidas:</span>
                     <div class="flex flex-wrap gap-1.5">
-                        <button type="button" onclick="setQuickWaitingReason('Aguardando aprovação do cliente')" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-600 dark:text-slate-300 hover:text-amber-600 border border-slate-200 dark:border-slate-700 text-[10px] font-semibold transition">Aprovação do cliente</button>
-                        <button type="button" onclick="setQuickWaitingReason('Falta de matéria-prima / insumo')" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-600 dark:text-slate-300 hover:text-amber-600 border border-slate-200 dark:border-slate-700 text-[10px] font-semibold transition">Falta de material</button>
-                        <button type="button" onclick="setQuickWaitingReason('Aguardando definição de medidas / projeto')" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-600 dark:text-slate-300 hover:text-amber-600 border border-slate-200 dark:border-slate-700 text-[10px] font-semibold transition">Definição de medidas</button>
-                        <button type="button" onclick="setQuickWaitingReason('Aguardando desenho do cliente')" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-600 dark:text-slate-300 hover:text-amber-600 border border-slate-200 dark:border-slate-700 text-[10px] font-semibold transition">Desenho do cliente</button>
-                        <button type="button" onclick="setQuickWaitingReason('Aguardando liberação da madeira')" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-600 dark:text-slate-300 hover:text-amber-600 border border-slate-200 dark:border-slate-700 text-[10px] font-semibold transition">Liberação da madeira</button>
+                        <button type="button" onclick="setQuickWaitingReason('Revisar e produzir')" class="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500 text-emerald-700 dark:text-emerald-300 hover:text-white border border-emerald-500/35 text-[10px] font-bold transition flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> Revisar e produzir
+                        </button>
+                        <button type="button" onclick="setQuickWaitingReason('Aprovação do cliente')" class="px-2.5 py-1 rounded-lg bg-blue-500/15 hover:bg-blue-600 text-blue-700 dark:text-blue-300 hover:text-white border border-blue-500/35 text-[10px] font-bold transition flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-blue-500"></span> Aprovação do cliente
+                        </button>
+                        <button type="button" onclick="setQuickWaitingReason('Aguardando desenho')" class="px-2.5 py-1 rounded-lg bg-fuchsia-500/15 hover:bg-fuchsia-600 text-fuchsia-700 dark:text-fuchsia-300 hover:text-white border border-fuchsia-500/35 text-[10px] font-bold transition flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-fuchsia-500"></span> Aguardando desenho
+                        </button>
+                        <button type="button" onclick="setQuickWaitingReason('Falta de matéria-prima / insumo')" class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-600 text-amber-700 dark:text-amber-300 hover:text-white border border-amber-500/35 text-[10px] font-bold transition flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-amber-500"></span> Falta de material
+                        </button>
+                        <button type="button" onclick="setQuickWaitingReason('Aguardando definição de medidas / projeto')" class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-600 text-amber-700 dark:text-amber-300 hover:text-white border border-amber-500/35 text-[10px] font-bold transition flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-amber-500"></span> Definição de medidas
+                        </button>
+                        <button type="button" onclick="setQuickWaitingReason('Aguardando liberação da madeira')" class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-600 text-amber-700 dark:text-amber-300 hover:text-white border border-amber-500/35 text-[10px] font-bold transition flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-amber-500"></span> Liberação da madeira
+                        </button>
                     </div>
                 </div>
 

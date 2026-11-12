@@ -1,4 +1,381 @@
 // =========================================================================
+// CORES DINÂMICAS PARA TAGS DE STATUS "AGUARDANDO" & AGRUPAMENTO DE SUBTAREFAS
+// =========================================================================
+function isSubtaskGroupedItem(subOrItem) {
+    if (!subOrItem) return false;
+    if (Boolean(subOrItem.isGrouped) || (Number(subOrItem.groupedCount) || 0) >= 2) return true;
+    const idStr = String(subOrItem.id || subOrItem.subId || '');
+    const txtStr = String(subOrItem.text || subOrItem.itemTitle || '').toUpperCase();
+    return idStr.includes('_grp_') || txtStr.includes('[AGRUPADO') || txtStr.includes('#GRP-');
+}
+
+function extractSubtaskOriginalImportNumber(sub) {
+    if (!sub) return null;
+    const txt = String(sub.text || '');
+    const m = txt.match(/#(?:GRP-)?0*(\d+)/i);
+    if (m && m[1]) {
+        return parseInt(m[1], 10);
+    }
+    return null;
+}
+
+function restoreSubtasksOriginalOrUserOrderIfScrambled(task) {
+    if (!task || !Array.isArray(task.subtasks) || task.subtasks.length <= 1) return;
+    // Se o usuário já personalizou manualmente a posição com as setas ▲/▼, respeita 100% a posição escolhida!
+    if (task.subtasksUserCustomOrder) return;
+
+    // Caso a tarefa tenha sido reordenada no banco anteriormente pelo agrupamento antigo de concluídas no topo,
+    // restaura automaticamente a sequência numérica original da importação ([#01], [#02], [#03]...)
+    const withNums = task.subtasks.map((s, idx) => ({
+        s,
+        idx,
+        num: extractSubtaskOriginalImportNumber(s)
+    }));
+    const validNumsCount = withNums.filter(x => x.num !== null).length;
+    if (validNumsCount >= 2) {
+        let isOutOfImportOrder = false;
+        for (let i = 1; i < withNums.length; i++) {
+            const prevNum = withNums[i - 1].num;
+            const curNum = withNums[i].num;
+            if (prevNum !== null && curNum !== null && curNum < prevNum) {
+                isOutOfImportOrder = true;
+                break;
+            }
+        }
+        if (isOutOfImportOrder) {
+            withNums.sort((a, b) => {
+                if (a.num !== null && b.num !== null && a.num !== b.num) {
+                    return a.num - b.num;
+                }
+                return a.idx - b.idx;
+            });
+            task.subtasks = withNums.map(x => x.s);
+            task.subtasks.forEach((s, i) => { s.originalOrder = i; });
+        }
+    }
+}
+
+async function restoreTaskSubtasksImportOrderManual(taskId, event = null) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task || !Array.isArray(task.subtasks) || task.subtasks.length <= 1) return;
+    task.subtasksUserCustomOrder = false;
+    const withNums = task.subtasks.map((s, idx) => ({
+        s,
+        idx,
+        num: extractSubtaskOriginalImportNumber(s)
+    }));
+    withNums.sort((a, b) => {
+        if (a.num !== null && b.num !== null && a.num !== b.num) {
+            return a.num - b.num;
+        }
+        return (a.s.originalOrder ?? a.idx) - (b.s.originalOrder ?? b.idx);
+    });
+    task.subtasks = withNums.map(x => x.s);
+    task.subtasks.forEach((s, i) => { s.originalOrder = i; });
+    task.updatedAt = Date.now();
+    saveLocalCacheOnly();
+    renderAll();
+    await upsertTaskToCloud(task);
+    showToast('Sequência original da importação restaurada!', 'success');
+}
+
+function getSubtaskQueuePriorityTier(subOrItem) {
+    if (!subOrItem) return 2;
+    if (Boolean(subOrItem.completed)) return 0; // 1º na fila: Finalizadas (cinza claro)
+
+    const isWaiting = Boolean(subOrItem.waiting);
+    if (!isWaiting) return 2; // 3º na fila: Pendentes normais em execução
+
+    const r = String(subOrItem.waitingReason || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim();
+
+    if (r.includes('revisar e produzir') || r.includes('revisar')) {
+        return 1; // 2º na fila: Logo após as finalizadas!
+    }
+    if (r.includes('aguardando desenho') || r.includes('desenho')) {
+        return 4; // Fim da fila
+    }
+    if (r.includes('aprovacao do cliente') || r.includes('aprovacao')) {
+        return 5; // Fim da fila
+    }
+    return 3; // Outros motivos de aguardando
+}
+
+function getWaitingReasonColors(reason, type = 'button') {
+    const r = String(reason || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim();
+
+    // 1. Revisar e produzir -> Verde Claro (Emerald / Lime)
+    if (r.includes('revisar e produzir') || r.includes('revisar')) {
+        if (type === 'bg') {
+            return 'bg-emerald-400 hover:bg-emerald-300 border-l-4 border-l-emerald-700 ring-1 ring-emerald-300 text-slate-900';
+        }
+        if (type === 'pill') {
+            return 'border-emerald-400/80 bg-emerald-400/20 dark:bg-emerald-950/70 text-emerald-950 dark:text-emerald-200 ring-1 ring-emerald-400/40';
+        }
+        if (type === 'badge') {
+            return 'bg-emerald-400/20 border-emerald-500/40 text-emerald-900 dark:text-emerald-200';
+        }
+        return 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 border-emerald-600 shadow-sm font-extrabold';
+    }
+
+    if (r.includes('aprovacao do cliente') || r.includes('aprovacao')) {
+        if (type === 'bg') {
+            return 'bg-blue-600 hover:bg-blue-500 border-l-4 border-l-blue-950 ring-1 ring-blue-400';
+        }
+        if (type === 'pill') {
+            return 'border-blue-500/60 bg-blue-500/15 dark:bg-blue-950/70 text-blue-900 dark:text-blue-200 ring-1 ring-blue-500/30';
+        }
+        if (type === 'badge') {
+            return 'bg-blue-500/15 border-blue-500/35 text-blue-800 dark:text-blue-200';
+        }
+        return 'bg-blue-600 hover:bg-blue-500 text-white border-blue-700 shadow-sm';
+    }
+
+    if (r.includes('aguardando desenho') || r.includes('desenho')) {
+        if (type === 'bg') {
+            return 'bg-fuchsia-600 hover:bg-fuchsia-500 border-l-4 border-l-fuchsia-950 ring-1 ring-fuchsia-400';
+        }
+        if (type === 'pill') {
+            return 'border-fuchsia-500/60 bg-fuchsia-500/15 dark:bg-fuchsia-950/70 text-fuchsia-900 dark:text-fuchsia-200 ring-1 ring-fuchsia-500/30';
+        }
+        if (type === 'badge') {
+            return 'bg-fuchsia-500/15 border-fuchsia-500/35 text-fuchsia-800 dark:text-fuchsia-200';
+        }
+        return 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white border-fuchsia-700 shadow-sm';
+    }
+
+    // Padrão (Laranja / Amber) para os demais motivos (ex: Liberação da madeira, Falta de material, etc.)
+    if (type === 'bg') {
+        return 'bg-amber-500 hover:bg-amber-400 border-l-4 border-l-amber-900 ring-1 ring-amber-400';
+    }
+    if (type === 'pill') {
+        return 'border-amber-500/60 bg-amber-500/15 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 ring-1 ring-amber-500/30';
+    }
+    if (type === 'badge') {
+        return 'bg-amber-500/15 border-amber-500/35 text-amber-800 dark:text-amber-200';
+    }
+    return 'bg-amber-500 hover:bg-amber-400 text-white border-amber-600 shadow-sm';
+}
+
+const selectedCardSubtasksMap = new Map(); // taskId -> Set(subIdx)
+let isGanttGroupingModeActive = false; // Controla o modo de seleção para agrupar subtarefas no Gantt
+
+function toggleGanttGroupingMode(forceState = null) {
+    if (!hasUserPermission('canEdit') && !hasUserPermission('canManageSubtasks')) {
+        showToast('Você não possui permissão para agrupar subtarefas.', 'error');
+        return;
+    }
+    isGanttGroupingModeActive = typeof forceState === 'boolean' ? forceState : !isGanttGroupingModeActive;
+    if (!isGanttGroupingModeActive) {
+        selectedCardSubtasksMap.clear();
+    } else {
+        // Expande automaticamente as tarefas macro visíveis no Gantt para facilitar a seleção das subtarefas
+        const visible = getFilteredTasks();
+        visible.forEach(t => expandedGanttMacroSet.add(t.id));
+        showToast('Modo Agrupar ativado! Marque 2 ou mais subtarefas no Gantt e clique em "Confirmar Agrupamento".', 'info');
+    }
+    renderAll();
+}
+
+function getTotalSelectedSubtasksForGroupingCount() {
+    let total = 0;
+    selectedCardSubtasksMap.forEach(set => {
+        if (set && set.size >= 2) total += set.size;
+    });
+    return total;
+}
+
+function getTotalSelectedSubtasksRawCount() {
+    let total = 0;
+    selectedCardSubtasksMap.forEach(set => {
+        if (set) total += set.size;
+    });
+    return total;
+}
+
+async function confirmAllGanttSelectedSubtasksGrouping() {
+    const tasksToGroup = [];
+    selectedCardSubtasksMap.forEach((set, taskId) => {
+        if (set && set.size >= 2) {
+            tasksToGroup.push(taskId);
+        }
+    });
+
+    if (tasksToGroup.length === 0) {
+        showToast('Selecione pelo menos 2 subtarefas da mesma tarefa no Gantt para agrupar.', 'info');
+        return;
+    }
+
+    for (const tId of tasksToGroup) {
+        await groupSelectedCardSubtasks(tId);
+    }
+    isGanttGroupingModeActive = false;
+    selectedCardSubtasksMap.clear();
+    renderAll();
+}
+
+function toggleCardSubtaskGroupSelect(taskId, subIdx, checked) {
+    if (!selectedCardSubtasksMap.has(taskId)) {
+        selectedCardSubtasksMap.set(taskId, new Set());
+    }
+    const set = selectedCardSubtasksMap.get(taskId);
+    if (checked) set.add(Number(subIdx));
+    else set.delete(Number(subIdx));
+    renderAll();
+}
+
+async function groupSelectedCardSubtasks(taskId) {
+    if (!hasUserPermission('canEdit') && !hasUserPermission('canManageSubtasks')) {
+        showToast('Você não possui permissão para agrupar subtarefas.', 'error');
+        return;
+    }
+    const task = tasks.find(t => t.id === taskId);
+    if (!task || !Array.isArray(task.subtasks)) return;
+
+    const selSet = selectedCardSubtasksMap.get(taskId);
+    if (!selSet || selSet.size < 2) {
+        showToast('Selecione pelo menos 2 subtarefas para agrupar em uma única.', 'info');
+        return;
+    }
+
+    const sortedIndexes = Array.from(selSet)
+        .filter(idx => idx >= 0 && idx < task.subtasks.length)
+        .sort((a, b) => a - b);
+
+    if (sortedIndexes.length < 2) {
+        selectedCardSubtasksMap.delete(taskId);
+        renderAll();
+        return;
+    }
+
+    ensureSubtaskStructure(task.subtasks);
+    const firstSub = task.subtasks[sortedIndexes[0]];
+    let totalHours = 0;
+    const combinedTexts = [];
+    const combinedInnerTasks = [];
+    const assigneesSet = new Set();
+    let anyWaiting = false;
+    const waitingReasons = new Set();
+
+    sortedIndexes.forEach(idx => {
+        const s = task.subtasks[idx];
+        totalHours += Math.max(0.1, Number(s.hours) || 2);
+        if (s.text) combinedTexts.push(s.text.trim());
+        if (s.assignee) {
+            parseAssigneesList(s.assignee).forEach(a => assigneesSet.add(a));
+        }
+        if (s.waiting) {
+            anyWaiting = true;
+            if (s.waitingReason) waitingReasons.add(s.waitingReason);
+        }
+        if (Array.isArray(s.innerTasks) && s.innerTasks.length > 0) {
+            s.innerTasks.forEach(it => combinedInnerTasks.push({ ...it }));
+        }
+    });
+
+    const groupedSubtask = {
+        id: 'sub_grp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        text: `[Agrupado (${sortedIndexes.length})] ` + combinedTexts.join(' + '),
+        assignee: Array.from(assigneesSet).join(', ') || firstSub.assignee || '',
+        hours: roundHours1Dec(totalHours, 0.1),
+        completed: sortedIndexes.every(idx => Boolean(task.subtasks[idx].completed)),
+        waiting: anyWaiting,
+        waitingReason: anyWaiting ? Array.from(waitingReasons).join(' / ') : '',
+        innerTasks: combinedInnerTasks,
+        isGrouped: true,
+        groupedCount: sortedIndexes.length,
+        originalOrder: firstSub.originalOrder ?? sortedIndexes[0]
+    };
+
+    for (let i = sortedIndexes.length - 1; i >= 0; i--) {
+        task.subtasks.splice(sortedIndexes[i], 1);
+    }
+    task.subtasks.splice(sortedIndexes[0], 0, groupedSubtask);
+    task.subtasks.forEach((s, i) => { s.originalOrder = i; });
+
+    selectedCardSubtasksMap.delete(taskId);
+    task.updatedAt = Date.now();
+    saveLocalCacheOnly();
+    renderAll();
+    await upsertTaskToCloud(task);
+    showToast(`${sortedIndexes.length} subtarefas agrupadas em uma única (${formatTotalHours1Dec(totalHours)}h)!`, 'success');
+}
+
+function toggleModalSubtaskGroupSelect(subIdx, checked) {
+    ensureSubtaskStructure(modalSubtasks);
+    if (!modalSubtasks[subIdx]) return;
+    modalSubtasks[subIdx]._selectedForGroup = Boolean(checked);
+    renderModalSubtasks();
+}
+
+function groupSelectedModalSubtasks() {
+    ensureSubtaskStructure(modalSubtasks);
+    const selectedIndexes = [];
+    modalSubtasks.forEach((s, idx) => {
+        if (s._selectedForGroup) selectedIndexes.push(idx);
+    });
+
+    if (selectedIndexes.length < 2) {
+        showToast('Selecione pelo menos 2 subtarefas para agrupar.', 'info');
+        return;
+    }
+
+    const firstSub = modalSubtasks[selectedIndexes[0]];
+    let totalHours = 0;
+    const combinedTexts = [];
+    const combinedInnerTasks = [];
+    const assigneesSet = new Set();
+    let anyWaiting = false;
+    const waitingReasons = new Set();
+
+    selectedIndexes.forEach(idx => {
+        const s = modalSubtasks[idx];
+        totalHours += Math.max(0.1, Number(s.hours) || 2);
+        if (s.text) combinedTexts.push(s.text.trim());
+        if (s.assignee) {
+            parseAssigneesList(s.assignee).forEach(a => assigneesSet.add(a));
+        }
+        if (s.waiting) {
+            anyWaiting = true;
+            if (s.waitingReason) waitingReasons.add(s.waitingReason);
+        }
+        if (Array.isArray(s.innerTasks) && s.innerTasks.length > 0) {
+            s.innerTasks.forEach(it => combinedInnerTasks.push({ ...it }));
+        }
+    });
+
+    const groupedSubtask = {
+        id: 'sub_grp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        text: `[Agrupado (${selectedIndexes.length})] ` + combinedTexts.join(' + '),
+        assignee: Array.from(assigneesSet).join(', ') || firstSub.assignee || '',
+        hours: roundHours1Dec(totalHours, 0.1),
+        completed: selectedIndexes.every(idx => Boolean(modalSubtasks[idx].completed)),
+        waiting: anyWaiting,
+        waitingReason: anyWaiting ? Array.from(waitingReasons).join(' / ') : '',
+        innerTasks: combinedInnerTasks,
+        isGrouped: true,
+        groupedCount: selectedIndexes.length,
+        _selectedForGroup: false
+    };
+
+    for (let i = selectedIndexes.length - 1; i >= 0; i--) {
+        modalSubtasks.splice(selectedIndexes[i], 1);
+    }
+    modalSubtasks.splice(selectedIndexes[0], 0, groupedSubtask);
+    activeExpandedSubtaskIdx = -1;
+    renderModalSubtasks();
+    showToast(`${selectedIndexes.length} subtarefas agrupadas em uma única (${formatTotalHours1Dec(totalHours)}h)!`, 'success');
+}
+
+// =========================================================================
 // 5. js/tasks-ui.js — Kanban, Lista Simplificada, Subtarefas, Reordenação,
 //    Destaque Visual, Senha de Exclusão, Trava de Scroll e Pomodoro
 // =========================================================================
@@ -303,10 +680,14 @@ function evaluateTaskSubtasksDeadlineInfo(taskOrObj) {
         const allSimTasks = [taskOrObj, ...otherSimTasks];
         const queues = allSimTasks.map(t => {
             const tSubs = ensureSubtaskStructure(t.subtasks || []);
-            const ordered = [
-                ...tSubs.map((s, i) => ({ s, i })).filter(x => x.s.completed),
-                ...tSubs.map((s, i) => ({ s, i })).filter(x => !x.s.completed)
-            ];
+            const ordered = tSubs
+                .map((s, i) => ({ s, i }))
+                .sort((a, b) => {
+                    const tierA = getSubtaskQueuePriorityTier(a.s);
+                    const tierB = getSubtaskQueuePriorityTier(b.s);
+                    if (tierA !== tierB) return tierA - tierB;
+                    return a.i - b.i;
+                });
             return { taskId: t.id, items: ordered, ptr: 0 };
         });
 
@@ -345,8 +726,17 @@ function evaluateTaskSubtasksDeadlineInfo(taskOrObj) {
         return result;
     }
 
-    // Cálculo sequencial padrão das subtarefas da tarefa
-    subs.forEach((s, idx) => {
+    // Cálculo sequencial das subtarefas respeitando a fila do Gantt, mas indexando pelo índice original (idx) da lista
+    const orderedForTimeline = subs
+        .map((s, idx) => ({ s, idx }))
+        .sort((a, b) => {
+            const tierA = getSubtaskQueuePriorityTier(a.s);
+            const tierB = getSubtaskQueuePriorityTier(b.s);
+            if (tierA !== tierB) return tierA - tierB;
+            return a.idx - b.idx;
+        });
+
+    orderedForTimeline.forEach(({ s, idx }) => {
         const h = Math.max(0.1, Number(s.hours) || 2);
         const subMember = (s.assignee || taskOrObj.author || '').trim() || null;
         const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings, subMember);
@@ -390,6 +780,7 @@ function renderTaskCardHTML(task) {
         dueIcon = 'fa-solid fa-clock';
     }
 
+    restoreSubtasksOriginalOrUserOrderIfScrambled(task);
     const subtasks = ensureSubtaskStructure(task.subtasks || []);
     const subDoneCount = subtasks.filter(s => s.completed).length;
     const subPercent = subtasks.length > 0 ? Math.round((subDoneCount / subtasks.length) * 100) : 0;
@@ -494,9 +885,9 @@ function renderTaskCardHTML(task) {
                     </h4>
                 </div>
                 ${(task.status === 'waiting' || (task.waiting && task.waitingReason)) ? `
-                    <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', null)" class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/35 text-amber-800 dark:text-amber-200 text-[11px] font-semibold flex items-center justify-between gap-2 cursor-pointer hover:bg-amber-500/25 transition" title="Clique para editar o motivo ou retomar a tarefa">
+                    <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', null)" class="px-2.5 py-1.5 rounded-xl border ${getWaitingReasonColors(task.waitingReason, 'badge')} text-[11px] font-semibold flex items-center justify-between gap-2 cursor-pointer hover:opacity-85 transition" title="Clique para editar o motivo ou retomar a tarefa">
                         <span class="flex items-center gap-1.5 min-w-0">
-                            <i class="fa-solid fa-circle-pause text-amber-500 shrink-0"></i>
+                            <i class="fa-solid fa-circle-pause shrink-0"></i>
                             <span class="truncate"><strong>Aguardando:</strong> ${escapeHtml(task.waitingReason || 'Clique para informar o motivo...')}</span>
                         </span>
                         <i class="fa-solid fa-pen text-[9px] opacity-70 shrink-0"></i>
@@ -532,6 +923,11 @@ function renderTaskCardHTML(task) {
                             <div class="flex flex-wrap items-center justify-between gap-1 text-[11px] text-slate-500 dark:text-slate-400 font-semibold">
                                 <span><i class="fa-solid fa-boxes-stacked mr-1 text-indigo-500"></i>Subtarefas (${subDoneCount}/${subtasks.length}) • <strong class="text-amber-600 dark:text-amber-400">${totalTaskHours}h (${totalTaskDays}d)</strong></span>
                                 <div class="flex items-center gap-1.5">
+                                    ${(allowEdit && (selectedCardSubtasksMap.get(task.id)?.size || 0) >= 2) ? `
+                                        <button type="button" onclick="event.stopPropagation(); groupSelectedCardSubtasks('${task.id}')" class="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow-sm transition flex items-center gap-1" title="Agrupar as subtarefas selecionadas em uma única">
+                                            <i class="fa-solid fa-object-group text-[8px]"></i> Agrupar (${selectedCardSubtasksMap.get(task.id).size})
+                                        </button>
+                                    ` : ''}
                                     ${allowEdit ? `
                                         <button type="button" onclick="distributeCardSubtaskHours('${task.id}')" class="px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/25 text-[10px] font-bold transition flex items-center gap-1" title="Redistribuir horas entre as subtarefas considerando 8h diárias até o vencimento">
                                             <i class="fa-solid fa-wand-magic-sparkles text-[8px]"></i> 8h/dia
@@ -620,10 +1016,20 @@ function renderTaskCardHTML(task) {
                                                         <i class="fa-regular fa-calendar-check text-[8px]"></i> Prev: ${subDeadlineInfo.endFormatted}
                                                     </span>
                                                 ` : '')}
+                                                ${allowEdit && subtasks.length >= 2 ? `
+                                                    <button type="button" onclick="event.stopPropagation(); toggleCardSubtaskGroupSelect('${task.id}', ${sIdx}, ${!(selectedCardSubtasksMap.get(task.id)?.has(sIdx))})" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border transition shrink-0 cursor-pointer ${
+                                                        selectedCardSubtasksMap.get(task.id)?.has(sIdx)
+                                                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
+                                                            : 'bg-slate-100 dark:bg-slate-800 hover:bg-emerald-500/15 text-slate-500 dark:text-slate-400 hover:text-emerald-600 border-slate-200 dark:border-slate-700'
+                                                    }" title="Marcar esta subtarefa para agrupar com outras">
+                                                        <i class="fa-solid fa-object-group text-[9px]"></i>
+                                                    </button>
+                                                ` : ''}
+
                                                 <!-- Botão Aguardando na Subtarefa -->
                                                 <button type="button" onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border transition shrink-0 cursor-pointer ${
                                                     sub.waiting
-                                                        ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
+                                                        ? getWaitingReasonColors(sub.waitingReason, 'button')
                                                         : 'bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-500 dark:text-slate-400 hover:text-amber-600 border-slate-200 dark:border-slate-700'
                                                 }" title="${sub.waiting ? 'Aguardando: ' + escapeHtml(sub.waitingReason || '') + ' (Clique para editar ou retomar)' : 'Marcar subtarefa como Aguardando e informar motivo'}">
                                                     <i class="fa-solid fa-circle-pause text-[9px]"></i>
@@ -644,8 +1050,8 @@ function renderTaskCardHTML(task) {
                                                 ` : ''}
                                             </div>
                                             ${sub.waiting ? `
-                                                <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="ml-6 px-2 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-800 dark:text-amber-200 text-[10px] font-semibold flex items-center justify-between gap-1.5 cursor-pointer hover:bg-amber-500/25 transition" title="Clique para editar a observação ou retomar a subtarefa">
-                                                    <span class="truncate"><i class="fa-solid fa-comment-dots text-amber-500 mr-1"></i><strong>Motivo:</strong> ${escapeHtml(sub.waitingReason || 'Sem observação')}</span>
+                                                <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="ml-6 px-2 py-1 rounded-lg border ${getWaitingReasonColors(sub.waitingReason, 'badge')} text-[10px] font-semibold flex items-center justify-between gap-1.5 cursor-pointer hover:opacity-85 transition" title="Clique para editar a observação ou retomar a subtarefa">
+                                                    <span class="truncate"><i class="fa-solid fa-comment-dots mr-1"></i><strong>Motivo:</strong> ${escapeHtml(sub.waitingReason || 'Sem observação')}</span>
                                                     <i class="fa-solid fa-pen text-[8px] opacity-70 shrink-0"></i>
                                                 </div>
                                             ` : ''}
@@ -990,39 +1396,10 @@ function ensureSubtaskStructure(subtasksList) {
  * cedendo o seu espaço e antecipando no cronograma as demais subtarefas pendentes!
  */
 function groupCompletedSubtasksAtTop(task) {
-    if (!task || !Array.isArray(task.subtasks) || task.subtasks.length <= 1) return;
+    // Mantém na Lista, no Kanban e no Modal exatamente a ordem original da importação ou a posição personalizada pelo usuário através das setas!
+    if (!task || !Array.isArray(task.subtasks)) return;
     ensureSubtaskStructure(task.subtasks);
-
-    // Captura quais subtarefas tinham painel de etapas internas aberto antes da reordenação
-    const openSubIds = new Set();
-    task.subtasks.forEach((s, idx) => {
-        if (expandedCardSubtasksSet.has(`${task.id}::${idx}`)) {
-            openSubIds.add(s.id);
-        }
-        expandedCardSubtasksSet.delete(`${task.id}::${idx}`);
-    });
-
-    const completedSubs = task.subtasks
-        .filter(s => Boolean(s.completed))
-        .sort((a, b) => {
-            const cA = typeof a.completedOrder === 'number' ? a.completedOrder : (a.completedAt || 0);
-            const cB = typeof b.completedOrder === 'number' ? b.completedOrder : (b.completedAt || 0);
-            if (cA !== cB) return cA - cB;
-            return (a.originalOrder ?? 0) - (b.originalOrder ?? 0);
-        });
-
-    const pendingSubs = task.subtasks
-        .filter(s => !s.completed)
-        .sort((a, b) => (a.originalOrder ?? 0) - (b.originalOrder ?? 0));
-
-    task.subtasks = [...completedSubs, ...pendingSubs];
-
-    // Restaura estado de expansão de etapas internas nos novos índices
-    task.subtasks.forEach((s, newIdx) => {
-        if (openSubIds.has(s.id)) {
-            expandedCardSubtasksSet.add(`${task.id}::${newIdx}`);
-        }
-    });
+    restoreSubtasksOriginalOrUserOrderIfScrambled(task);
 }
 
 function getInnerTaskBlockInfo(innerList, innerIdx) {
@@ -1791,6 +2168,14 @@ function renderModalSubtasks() {
         modalHoursBadge.innerHTML = `<i class="fa-regular fa-clock mr-1"></i>Total: ${totalModalHoursStr}h (${eqDays}d úteis de 8h)`;
     }
 
+    const selectedForGroupCount = modalSubtasks.filter(s => Boolean(s._selectedForGroup)).length;
+    const grpModalBtn = document.getElementById('groupModalSubtasksBtn');
+    const grpModalCnt = document.getElementById('groupModalSubtasksCount');
+    if (grpModalBtn && grpModalCnt) {
+        grpModalCnt.textContent = selectedForGroupCount;
+        grpModalBtn.classList.toggle('hidden', selectedForGroupCount < 2);
+    }
+
     if (modalSubtasks.length === 0) {
         listEl.innerHTML = `<li class="text-xs text-slate-400 italic py-2 text-center">Nenhuma subtarefa adicionada ainda.</li>`;
         return;
@@ -1835,6 +2220,9 @@ function renderModalSubtasks() {
                 <!-- Cabeçalho da Subtarefa no Modal + Reordenação + Atribuição de Membro (Dropdown ao clicar) -->
                 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-2 ${subModalExceeds ? 'bg-rose-500/10 dark:bg-rose-950/30' : 'bg-white/60 dark:bg-slate-800'}">
                     <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                        ${modalSubtasks.length >= 2 ? `
+                            <input type="checkbox" ${sub._selectedForGroup ? 'checked' : ''} onchange="toggleModalSubtaskGroupSelect(${sIdx}, this.checked)" class="rounded text-emerald-600 w-3.5 h-3.5 cursor-pointer shrink-0" title="Selecionar para agrupar subtarefas">
+                        ` : ''}
                         <!-- Botões Reordenar Subtarefa no Modal -->
                         <div class="inline-flex items-center rounded bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 p-0.5 shrink-0">
                             <button type="button" onclick="moveModalSubtaskOrder(${sIdx}, -1)" ${sIdx === 0 ? 'disabled' : ''} class="w-4 h-4 rounded hover:bg-white dark:hover:bg-slate-600 disabled:opacity-30 text-slate-600 dark:text-slate-300 flex items-center justify-center transition" title="Subir subtarefa">
@@ -1862,7 +2250,7 @@ function renderModalSubtasks() {
                         </div>
                         <button type="button" onclick="toggleModalSubtaskWaiting(${sIdx})" class="px-2 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1 ${
                             sub.waiting
-                                ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
+                                ? getWaitingReasonColors(sub.waitingReason, 'button')
                                 : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/25'
                         }" title="Marcar/desmarcar esta subtarefa como Aguardando e informar observação do motivo">
                             <i class="fa-solid fa-circle-pause text-[10px]"></i>
@@ -3103,6 +3491,7 @@ async function moveTaskOrder(taskId, delta) {
         return;
     }
     window._currentSortMode = 'manual';
+    if (typeof setSavedSortMode === 'function') setSavedSortMode('manual');
     const sortSelect = document.getElementById('sortBySelect');
     if (sortSelect && sortSelect.value !== 'manual') {
         sortSelect.value = 'manual';
@@ -3155,6 +3544,7 @@ async function handleCardDropReorder(e, targetTaskId) {
     if (srcIdx === -1 || tgtIdx === -1) return;
 
     window._currentSortMode = 'manual';
+    if (typeof setSavedSortMode === 'function') setSavedSortMode('manual');
     const sortSelect = document.getElementById('sortBySelect');
     if (sortSelect && sortSelect.value !== 'manual') {
         sortSelect.value = 'manual';
@@ -3195,6 +3585,7 @@ async function moveCardSubtaskOrder(taskId, subIdx, delta) {
     task.subtasks[subIdx] = task.subtasks[newIdx];
     task.subtasks[newIdx] = temp;
     task.subtasks.forEach((s, idx) => { s.originalOrder = idx; });
+    task.subtasksUserCustomOrder = true;
 
     task.updatedAt = Date.now();
     renderAll();
@@ -3580,6 +3971,7 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                     if (dueStatus === 'overdue') dueTextClass = 'text-rose-600 dark:text-rose-400 font-bold';
                     else if (dueStatus === 'today') dueTextClass = 'text-amber-600 dark:text-amber-400 font-bold';
 
+                    restoreSubtasksOriginalOrUserOrderIfScrambled(task);
                     const subtasks = task.subtasks || [];
                     const subDoneCount = subtasks.filter(s => s.completed).length;
                     const subPercent = subtasks.length > 0 ? Math.round((subDoneCount / subtasks.length) * 100) : 0;
@@ -3701,16 +4093,24 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                                             return `
                                                 <div class="py-1.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 text-xs">
                                                     <div class="flex items-center gap-2 min-w-0 flex-1">
+                                                        <div class="inline-flex items-center rounded bg-slate-200/70 dark:bg-slate-800 border border-slate-300/70 dark:border-slate-700 p-0.5 shrink-0" onclick="event.stopPropagation()" title="Definir ordem da subtarefa">
+                                                            <button type="button" onclick="moveCardSubtaskOrder('${task.id}', ${sIdx}, -1)" ${sIdx === 0 ? 'disabled' : ''} class="w-4 h-4 rounded hover:bg-white dark:hover:bg-slate-700 disabled:opacity-30 text-slate-500 hover:text-indigo-600 flex items-center justify-center" title="Subir subtarefa">
+                                                                <i class="fa-solid fa-caret-up text-[9px]"></i>
+                                                            </button>
+                                                            <button type="button" onclick="moveCardSubtaskOrder('${task.id}', ${sIdx}, 1)" ${sIdx === subtasks.length - 1 ? 'disabled' : ''} class="w-4 h-4 rounded hover:bg-white dark:hover:bg-slate-700 disabled:opacity-30 text-slate-500 hover:text-indigo-600 flex items-center justify-center" title="Descer subtarefa">
+                                                                <i class="fa-solid fa-caret-down text-[9px]"></i>
+                                                            </button>
+                                                        </div>
                                                         <input type="checkbox" ${sub.completed ? 'checked' : ''} ${allowSubtasks ? '' : 'disabled'} onchange="toggleSubtaskStatus('${task.id}', ${sIdx})" class="rounded text-indigo-600 w-3.5 h-3.5 cursor-pointer shrink-0">
                                                         <span class="truncate font-medium text-slate-700 dark:text-slate-200 ${sub.completed ? 'line-through opacity-55' : ''}" title="${escapeHtml(sub.text)}">${escapeHtml(sub.text)}</span>
                                                         ${sub.waiting ? `
-                                                            <span onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/35 text-amber-700 dark:text-amber-300 text-[10px] font-bold cursor-pointer truncate max-w-[220px]" title="Aguardando: ${escapeHtml(sub.waitingReason || '')} (Clique para editar)">
+                                                            <span onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border ${getWaitingReasonColors(sub.waitingReason, 'badge')} text-[10px] font-bold cursor-pointer truncate max-w-[220px]" title="Aguardando: ${escapeHtml(sub.waitingReason || '')} (Clique para editar)">
                                                                 <i class="fa-solid fa-circle-pause text-[9px]"></i> ${escapeHtml(sub.waitingReason || 'Aguardando')}
                                                             </span>
                                                         ` : ''}
                                                     </div>
                                                     <div class="flex items-center gap-1.5 shrink-0" onclick="event.stopPropagation()">
-                                                        <button type="button" onclick="openWaitingReasonModal('${task.id}', ${sIdx})" class="px-1.5 py-0.5 rounded text-[10px] font-bold border transition ${sub.waiting ? 'bg-amber-500 text-white border-amber-600' : 'bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-500 hover:text-amber-600 border-slate-200 dark:border-slate-700'}" title="${sub.waiting ? 'Editar motivo de Aguardando / Retomar' : 'Colocar em Aguardando e informar motivo'}">
+                                                        <button type="button" onclick="openWaitingReasonModal('${task.id}', ${sIdx})" class="px-1.5 py-0.5 rounded text-[10px] font-bold border transition ${sub.waiting ? getWaitingReasonColors(sub.waitingReason, 'button') : 'bg-slate-100 dark:bg-slate-800 hover:bg-amber-500/15 text-slate-500 hover:text-amber-600 border-slate-200 dark:border-slate-700'}" title="${sub.waiting ? 'Editar motivo de Aguardando / Retomar' : 'Colocar em Aguardando e informar motivo'}">
                                                             <i class="fa-solid fa-circle-pause text-[9px]"></i>
                                                         </button>
                                                         <div class="inline-flex items-center rounded bg-amber-500/10 border border-amber-500/25 px-1 py-0.5 gap-0.5" title="Horas da subtarefa">
@@ -4799,6 +5199,9 @@ function renderGanttView(filteredTasks, containerEl) {
                         type: 'subtask',
                         taskId: task.id,
                         subIdx: sIdx,
+                        subId: sub.id,
+                        isGrouped: isSubtaskGroupedItem(sub),
+                        groupedCount: Number(sub.groupedCount) || 0,
                         taskTitle: task.title,
                         itemTitle: sub.text,
                         hours: Math.max(0.1, Number(sub.hours) || 2),
@@ -4869,10 +5272,12 @@ function renderGanttView(filteredTasks, containerEl) {
         });
 
         macroGroupsMap.forEach(macro => {
-            macro.orderedQueue = [
-                ...macro.subItems.filter(it => it.completed),
-                ...macro.subItems.filter(it => !it.completed)
-            ];
+            macro.orderedQueue = [...macro.subItems].sort((a, b) => {
+                const tierA = getSubtaskQueuePriorityTier(a);
+                const tierB = getSubtaskQueuePriorityTier(b);
+                if (tierA !== tierB) return tierA - tierB;
+                return (a.subIdx ?? 0) - (b.subIdx ?? 0);
+            });
             macro.queuePtr = 0;
         });
 
@@ -5100,6 +5505,24 @@ function renderGanttView(filteredTasks, containerEl) {
                             </button>
                         </div>
 
+                        <!-- Botão para Acionar Seleção e Agrupar Subtarefas diretamente no Gantt -->
+                        <button type="button" onclick="toggleGanttGroupingMode()" class="px-2.5 py-1 rounded-lg text-[11px] font-extrabold border transition flex items-center gap-1.5 shadow-sm ${
+                            isGanttGroupingModeActive
+                                ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/40'
+                                : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                        }" title="Acionar modo para selecionar 2 ou mais subtarefas no Gantt e agrupá-las em uma só">
+                            <i class="fa-solid fa-object-group"></i>
+                            <span>${isGanttGroupingModeActive ? 'Cancelar Agrupamento' : 'Agrupar Subtarefas'}</span>
+                            ${getTotalSelectedSubtasksRawCount() > 0 ? `<span class="px-1.5 py-0.2 rounded-full bg-white text-emerald-700 text-[9px] font-black">${getTotalSelectedSubtasksRawCount()}</span>` : ''}
+                        </button>
+
+                        ${getTotalSelectedSubtasksForGroupingCount() >= 2 ? `
+                            <button type="button" onclick="confirmAllGanttSelectedSubtasksGrouping()" class="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-extrabold shadow-md transition flex items-center gap-1.5 animate-pulse" title="Unificar todas as subtarefas marcadas em uma única subtarefa">
+                                <i class="fa-solid fa-check-double"></i>
+                                <span>Unificar Selecionadas (${getTotalSelectedSubtasksForGroupingCount()})</span>
+                            </button>
+                        ` : ''}
+
                         <button type="button" onclick="openScheduleExceptionAuthModal({ mode: 'entry' })" class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 text-[11px] font-extrabold border border-amber-500/30 transition flex items-center gap-1.5 shadow-sm" title="Atribuir Hora Extra (+8h), Folga (0h) ou Período de Férias por Membro da Equipe (Exige Senha)">
                             <i class="fa-solid fa-user-clock text-amber-500"></i> <span>+ Escala / Férias</span>
                         </button>
@@ -5292,29 +5715,41 @@ function renderGanttView(filteredTasks, containerEl) {
         const percentDone = userGroup.rawTotalHours > 0 ? Math.round((userGroup.rawDoneHours / userGroup.rawTotalHours) * 100) : 0;
 
         const visibleRows = [];
+        let runningTopPx = 8;
         macros.forEach(macro => {
             if (expandedGanttMacroSet.has(macro.taskId)) {
                 expandedGanttMacroSet.add(macro.macroKey);
             }
             const isExpanded = expandedGanttMacroSet.has(macro.macroKey);
+            const macroRowSlotHeight = 36;
             visibleRows.push({
                 rowType: 'macro',
                 macro,
-                isExpanded
+                isExpanded,
+                topPx: runningTopPx,
+                slotHeight: macroRowSlotHeight
             });
+            runningTopPx += macroRowSlotHeight;
+
             if (isExpanded && macro.hasSubtasks) {
                 macro.scheduledSubs.forEach(subItem => {
                     if (shouldHideCompletedSubtasks() && subItem.completed) return;
+                    const isDoubleThick = Boolean(subItem.isGrouped);
+                    // Subtarefa normal = 24px de barra (slot 36px); Subtarefa agrupada = 48px de barra (dobro da espessura, slot 60px)
+                    const subRowSlotHeight = isDoubleThick ? 60 : 36;
                     visibleRows.push({
                         rowType: 'subtask',
                         macro,
-                        subItem
+                        subItem,
+                        topPx: runningTopPx,
+                        slotHeight: subRowSlotHeight
                     });
+                    runningTopPx += subRowSlotHeight;
                 });
             }
         });
 
-        const rowHeight = Math.max(58, (visibleRows.length * 36) + 14);
+        const rowHeight = Math.max(58, runningTopPx + 10);
 
         const userDayEvals = dayColumns.map(col => evaluateTimelineDayStatus(col.colMs, settings, user));
         const userVacDays = userDayEvals.filter(e => e.isVacation).length;
@@ -5410,7 +5845,7 @@ function renderGanttView(filteredTasks, containerEl) {
         const totalSpanMs = totalTimelineDays * DAY_MS;
 
         visibleRows.forEach((rowObj, rIdx) => {
-            const topPx = (rIdx * 36) + 8;
+            const topPx = typeof rowObj.topPx === 'number' ? rowObj.topPx : ((rIdx * 36) + 8);
 
             if (rowObj.rowType === 'macro') {
                 const macro = rowObj.macro;
@@ -5429,7 +5864,7 @@ function renderGanttView(filteredTasks, containerEl) {
                 const widthPct = Math.max(0.8, Math.min(100 - leftPct, rawWidthPct));
 
                 let macroBg = 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500';
-                if (macro.allCompleted) macroBg = 'bg-emerald-600 hover:bg-emerald-500 opacity-80';
+                if (macro.allCompleted) macroBg = 'bg-slate-300 dark:bg-slate-600 hover:bg-slate-400 text-slate-800 dark:text-slate-100 opacity-90';
                 else if (macro.priority === 'urgente') macroBg = 'bg-gradient-to-r from-rose-600 to-orange-600 hover:from-rose-500 hover:to-orange-500';
                 else if (macro.priority === 'alta') macroBg = 'bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 hover:to-orange-400';
 
@@ -5481,6 +5916,11 @@ function renderGanttView(filteredTasks, containerEl) {
                                         <i class="fa-solid fa-boxes-stacked text-[8px] mr-0.5"></i>${macro.completedCount}/${macro.totalCount}
                                     </span>
                                 ` : ''}
+                                ${(selectedCardSubtasksMap.get(macro.taskId)?.size || 0) >= 2 ? `
+                                    <button type="button" onclick="event.stopPropagation(); groupSelectedCardSubtasks('${macro.taskId}')" class="px-2 py-0.5 rounded-md bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-extrabold text-[9px] shadow flex items-center gap-1 animate-bounce" title="Agrupar as ${selectedCardSubtasksMap.get(macro.taskId).size} subtarefas selecionadas desta tarefa em uma única">
+                                        <i class="fa-solid fa-object-group"></i> Unificar (${selectedCardSubtasksMap.get(macro.taskId).size})
+                                    </button>
+                                ` : ''}
                                 <span class="px-1.5 py-0.2 rounded bg-black/25 font-mono text-[10px] font-extrabold" title="Soma das horas das subtarefas">
                                     ${macro.totalHours}h
                                 </span>
@@ -5510,14 +5950,14 @@ function renderGanttView(filteredTasks, containerEl) {
                 const rawWidthPct = ((clampedEndMs - clampedStartMs) / totalSpanMs) * 100;
                 const widthPct = Math.max(1.2, Math.min(100 - leftPct, rawWidthPct));
 
-                let subBarBg = 'bg-slate-700 dark:bg-slate-700 hover:bg-slate-600 border-l-4 border-l-indigo-400';
+                let subBarBg = 'bg-slate-700 dark:bg-slate-700 hover:bg-slate-600 border-l-4 border-l-indigo-400 text-white';
                 let extPillBorder = 'border-slate-300 dark:border-slate-700 bg-white/95 dark:bg-slate-800/95 text-slate-700 dark:text-slate-100';
                 if (item.completed) {
-                    subBarBg = 'bg-emerald-600 hover:bg-emerald-500 border-l-4 border-l-emerald-200';
-                    extPillBorder = 'border-emerald-500/35 bg-emerald-500/10 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-200';
+                    subBarBg = 'bg-slate-300 dark:bg-slate-600 hover:bg-slate-400 border-l-4 border-l-slate-500 text-slate-700 dark:text-slate-200';
+                    extPillBorder = 'border-slate-300 dark:border-slate-600 bg-slate-200/90 dark:bg-slate-800/80 text-slate-500 dark:text-slate-300';
                 } else if (item.waiting) {
-                    subBarBg = 'bg-amber-500 hover:bg-amber-400 border-l-4 border-l-amber-900 ring-1 ring-amber-400';
-                    extPillBorder = 'border-amber-500/60 bg-amber-500/15 dark:bg-amber-950/70 text-amber-900 dark:text-amber-200 ring-1 ring-amber-500/30';
+                    subBarBg = getWaitingReasonColors(item.waitingReason, 'bg');
+                    extPillBorder = getWaitingReasonColors(item.waitingReason, 'pill');
                 } else if (item.exceedsDeadline) {
                     subBarBg = 'bg-rose-600 hover:bg-rose-500 border-l-4 border-l-amber-300 ring-1 ring-rose-400';
                     extPillBorder = 'border-rose-500/45 bg-rose-500/10 dark:bg-rose-950/60 text-rose-800 dark:text-rose-200';
@@ -5527,21 +5967,39 @@ function renderGanttView(filteredTasks, containerEl) {
                 const adjustPlusCall  = `adjustCardSubtaskHours('${item.taskId}', ${item.subIdx}, 0.5)`;
                 const toggleDoneCall  = `toggleSubtaskStatus('${item.taskId}', ${item.subIdx})`;
                 const waitingModalCall = `openWaitingReasonModal('${item.taskId}', ${item.subIdx})`;
+                const isSubSelectedForGroup = Boolean(item.subIdx >= 0 && selectedCardSubtasksMap.get(item.taskId)?.has(item.subIdx));
+                const toggleGroupSelectCall = `toggleCardSubtaskGroupSelect('${item.taskId}', ${item.subIdx}, ${!isSubSelectedForGroup})`;
+                if (isSubSelectedForGroup) {
+                    extPillBorder = 'border-emerald-500 bg-emerald-500/15 dark:bg-emerald-950/80 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-500/50';
+                }
 
-                // Se a barra tiver largura suficiente (>= 24% da linha do tempo), renderiza texto e controles dentro da barra.
-                // Se a barra for curta (< 24%), mantém a barra na largura exata da sua duração e exibe o rótulo legível ao lado!
+                // Subtarefa normal = h-6 (24px de espessura). Subtarefa agrupada = h-12 (48px = DOBRO DA ESPESSURA)!
+                const isGroupedDoubleBar = Boolean(item.isGrouped);
+                const barThicknessClass = isGroupedDoubleBar
+                    ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30'
+                    : 'h-6 rounded-lg shadow-sm';
                 const canFitInsideBar = widthPct >= 24;
                 const placeLabelOnLeft = !canFitInsideBar && (leftPct + widthPct > 65);
-                const tooltipSub = `Subtarefa: ${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
+                const tooltipSub = `${isGroupedDoubleBar ? '🔀 SUBTAREFA AGRUPADA (DOBRO DA ESPESSURA) — ' : 'Subtarefa: '}${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
 
                 if (canFitInsideBar) {
                     html += `
-                        <div class="absolute h-6 rounded-lg shadow-sm ${subBarBg} text-white flex items-center justify-between gap-1.5 px-2 text-[10px] font-medium transition-all z-10 hover:z-30 overflow-hidden"
+                        <div class="absolute ${barThicknessClass} ${subBarBg} text-white flex items-center justify-between gap-1.5 px-2.5 ${isGroupedDoubleBar ? 'text-[11px] font-bold' : 'text-[10px] font-medium'} transition-all z-10 hover:z-30 overflow-hidden"
                              style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; top: ${topPx + 2}px;"
                              title="${escapeHtml(tooltipSub)}">
                             
-                            <div class="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer overflow-hidden" onclick="openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})">
-                                <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="event.stopPropagation(); ${toggleDoneCall}" class="rounded text-emerald-500 w-3 h-3 cursor-pointer shrink-0">
+                            <div class="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer overflow-hidden" onclick="${isGanttGroupingModeActive && item.subIdx >= 0 ? toggleGroupSelectCall : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}">
+                                ${item.subIdx >= 0 && (isGanttGroupingModeActive || isSubSelectedForGroup) ? `
+                                    <button type="button" onclick="event.stopPropagation(); ${toggleGroupSelectCall}" class="px-1.5 py-0.2 rounded ${isSubSelectedForGroup ? 'bg-emerald-500 text-white ring-2 ring-white' : 'bg-black/40 text-emerald-300 hover:bg-emerald-600 hover:text-white'} text-[9px] font-extrabold flex items-center gap-1 shrink-0 transition" title="Marcar/desmarcar esta subtarefa para agrupar">
+                                        <i class="fa-solid ${isSubSelectedForGroup ? 'fa-square-check' : 'fa-object-group'}"></i>
+                                        <span>${isSubSelectedForGroup ? 'Marcada' : 'Agrupar'}</span>
+                                    </button>
+                                ` : `
+                                    <button type="button" onclick="event.stopPropagation(); ${toggleGroupSelectCall}" class="w-4 h-4 rounded bg-black/25 hover:bg-emerald-500 text-white/80 hover:text-white flex items-center justify-center shrink-0 transition" title="Selecionar para agrupar subtarefas">
+                                        <i class="fa-solid fa-object-group text-[8px]"></i>
+                                    </button>
+                                `}
+                                <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="event.stopPropagation(); ${toggleDoneCall}" class="rounded text-emerald-500 w-3 h-3 cursor-pointer shrink-0" title="Marcar subtarefa como concluída">
                                 <span class="truncate font-semibold ${item.completed ? 'line-through opacity-80' : ''}">${escapeHtml(item.itemTitle)}</span>
                             </div>
 
@@ -5565,22 +6023,35 @@ function renderGanttView(filteredTasks, containerEl) {
                     `;
                 } else {
                     html += `
-                        <!-- Barra exata de duração da subtarefa na escala de tempo -->
+                        <!-- Barra exata de duração da subtarefa na escala de tempo (Com o DOBRO DA ESPESSURA h-12 quando agrupada, ou h-6 quando simples) -->
                         <div onclick="openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})"
-                             class="absolute h-6 rounded-md shadow-sm ${subBarBg} text-white flex items-center justify-center cursor-pointer transition-all z-10 hover:z-30"
-                             style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; min-width: 10px; top: ${topPx + 2}px;"
+                             class="absolute ${isGroupedDoubleBar ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30' : 'h-6 rounded-md shadow-sm'} ${subBarBg} text-white flex items-center justify-center cursor-pointer transition-all z-10 hover:z-30"
+                             style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; min-width: ${isGroupedDoubleBar ? '14px' : '10px'}; top: ${topPx + 2}px;"
                              title="${escapeHtml(tooltipSub)}">
-                            ${widthPct >= 3.2 ? `<span class="font-mono text-[8px] font-extrabold leading-none truncate px-0.5">${item.hours}h</span>` : ''}
+                            ${widthPct >= 3.2 ? `<span class="font-mono ${isGroupedDoubleBar ? 'text-[10px]' : 'text-[8px]'} font-extrabold leading-none truncate px-0.5">${item.hours}h</span>` : ''}
                         </div>
 
-                        <!-- Rótulo externo completo e interativo da Subtarefa (sempre visível e legível ao lado da barra!) -->
-                        <div class="absolute h-6 flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[420px] sm:max-w-[560px] ${extPillBorder}"
-                             style="${placeLabelOnLeft ? `right: ${(100 - leftPct + 0.5).toFixed(3)}%;` : `left: ${(leftPct + widthPct + 0.5).toFixed(3)}%;`} top: ${topPx + 2}px;"
+                        <!-- Rótulo externo completo e interativo da Subtarefa (Centralizado verticalmente com a barra de dobro de espessura!) -->
+                        <div class="absolute ${isGroupedDoubleBar ? 'h-9' : 'h-6'} flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[420px] sm:max-w-[560px] ${extPillBorder}"
+                             style="${placeLabelOnLeft ? `right: ${(100 - leftPct + 0.5).toFixed(3)}%;` : `left: ${(leftPct + widthPct + 0.5).toFixed(3)}%;`} top: ${topPx + (isGroupedDoubleBar ? 8 : 2)}px;"
                              title="${escapeHtml(tooltipSub)}">
                             
-                            <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="event.stopPropagation(); ${toggleDoneCall}" class="rounded text-emerald-600 w-3 h-3 cursor-pointer shrink-0">
+                            ${item.subIdx >= 0 ? `
+                                <button type="button" onclick="event.stopPropagation(); ${toggleGroupSelectCall}" class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded border text-[9px] font-extrabold transition shrink-0 cursor-pointer ${
+                                    isSubSelectedForGroup
+                                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm ring-1 ring-emerald-400'
+                                        : (isGanttGroupingModeActive
+                                            ? 'bg-emerald-500/20 hover:bg-emerald-600 text-emerald-700 dark:text-emerald-300 hover:text-white border-emerald-500/50 animate-pulse'
+                                            : 'bg-slate-100 dark:bg-slate-700 hover:bg-emerald-500/20 text-slate-500 dark:text-slate-300 hover:text-emerald-600 border-slate-300 dark:border-slate-600')
+                                }" title="${isSubSelectedForGroup ? 'Subtarefa marcada para agrupar (Clique para desmarcar)' : 'Selecionar esta subtarefa para agrupar com outras'}">
+                                    <i class="fa-solid ${isSubSelectedForGroup ? 'fa-square-check' : 'fa-object-group'} text-[8px]"></i>
+                                    ${(isGanttGroupingModeActive || isSubSelectedForGroup) ? `<span>${isSubSelectedForGroup ? 'Selecionada' : 'Selecionar'}</span>` : ''}
+                                </button>
+                            ` : ''}
+
+                            <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="event.stopPropagation(); ${toggleDoneCall}" class="rounded text-emerald-600 w-3 h-3 cursor-pointer shrink-0" title="Marcar subtarefa como concluída">
                             
-                            <span onclick="openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})"
+                            <span onclick="${isGanttGroupingModeActive && item.subIdx >= 0 ? `event.stopPropagation(); ${toggleGroupSelectCall}` : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}"
                                   class="truncate cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 ${item.completed ? 'line-through opacity-65' : ''}">
                                 ${escapeHtml(item.itemTitle)}
                             </span>
@@ -5597,7 +6068,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                 <button type="button" onclick="event.stopPropagation(); ${waitingModalCall}"
                                         class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded border text-[9px] font-extrabold transition shrink-0 cursor-pointer max-w-[160px] truncate ${
                                             item.waiting
-                                                ? 'bg-amber-500 text-white border-amber-600 shadow-sm'
+                                                ? getWaitingReasonColors(item.waitingReason, 'button')
                                                 : 'bg-slate-100 dark:bg-slate-700 hover:bg-amber-500/20 text-slate-600 dark:text-slate-300 hover:text-amber-600 border-slate-300 dark:border-slate-600'
                                         }"
                                         title="${item.waiting ? '⏸️ Aguardando: ' + escapeHtml(item.waitingReason) + ' (Clique para editar motivo ou retomar)' : 'Colocar em Aguardando e informar observação para o motivo'}">
@@ -5965,6 +6436,7 @@ async function handleConfirmWaitingReason(event) {
         showToast(`Tarefa em Aguardando! Aviso enviado a ${responsibleLabel} (cópia sincronizada criada para você).`, 'info');
     }
 
+    groupCompletedSubtasksAtTop(task);
     task.updatedAt = Date.now();
     renderAll();
     await upsertTaskToCloud(task);
@@ -5991,6 +6463,7 @@ async function removeWaitingStatusFromModal() {
         showToast('Tarefa retomada para Em Andamento!', 'success');
     }
 
+    groupCompletedSubtasksAtTop(task);
     task.updatedAt = Date.now();
     renderAll();
     await upsertTaskToCloud(task);
@@ -7469,4 +7942,35 @@ updateInnerTaskAssignee = function(subIdx, innerIdx, newAssignee) {
         return;
     }
     _baseUpdateInnerTaskAssigneeMulti(subIdx, innerIdx, newAssignee);
+};
+
+
+// =========================================================================
+// OTIMIZAÇÃO DE PERFORMANCE: DEBOUNCE NAS ALTERAÇÕES RÁPIDAS DE HORAS
+// =========================================================================
+const _debouncedTaskCloudSyncTimers = new Map();
+function scheduleDebouncedTaskCloudSync(taskObj, delayMs = 350) {
+    if (!taskObj || !taskObj.id) return;
+    if (_debouncedTaskCloudSyncTimers.has(taskObj.id)) {
+        clearTimeout(_debouncedTaskCloudSyncTimers.get(taskObj.id));
+    }
+    const timerId = setTimeout(async () => {
+        _debouncedTaskCloudSyncTimers.delete(taskObj.id);
+        await upsertTaskToCloud(taskObj);
+    }, delayMs);
+    _debouncedTaskCloudSyncTimers.set(taskObj.id, timerId);
+}
+
+const _baseAdjustCardSubtaskHours = adjustCardSubtaskHours;
+adjustCardSubtaskHours = async function(taskId, subIdx, delta) {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task || !task.subtasks || !task.subtasks[subIdx]) return;
+    ensureSubtaskStructure(task.subtasks);
+
+    const cur = Number(task.subtasks[subIdx].hours) || 2;
+    task.subtasks[subIdx].hours = Math.max(0.1, Math.round((cur + delta) * 10) / 10);
+    task.updatedAt = Date.now();
+    saveLocalCacheOnly();
+    renderAll();
+    scheduleDebouncedTaskCloudSync(task, 350);
 };

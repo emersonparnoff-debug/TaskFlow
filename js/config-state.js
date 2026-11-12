@@ -355,3 +355,53 @@ function formatHoursClean(val) {
     const r = Math.round(num * 10) / 10;
     return Number.isInteger(r) ? String(r) : r.toFixed(1);
 }
+
+
+// ==========================================================
+// UTILITÁRIOS DE SEGURANÇA (ESCAPE JS INLINE & UTF-8 BASE64)
+// ==========================================================
+function escapeJsAttr(str) {
+    if (str === null || str === undefined) return '';
+    return escapeHtml(
+        String(str)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/\r/g, '\\r')
+            .replace(/\n/g, '\\n')
+    );
+}
+
+function encodeUtf8Base64(str) {
+    if (!str) return '';
+    try {
+        const bytes = new TextEncoder().encode(String(str));
+        let bin = '';
+        bytes.forEach(b => { bin += String.fromCharCode(b); });
+        return btoa(bin);
+    } catch (e) {
+        return '';
+    }
+}
+
+function decodeUtf8Base64(b64) {
+    if (!b64) return '';
+    try {
+        const bin = atob(String(b64));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) {
+            bytes[i] = bin.charCodeAt(i);
+        }
+        return new TextDecoder().decode(bytes);
+    } catch (e) {
+        return '';
+    }
+}
+
+const SORT_MODE_KEY = 'taskflow_pro_sort_mode_v1';
+window._currentSortMode = localStorage.getItem(SORT_MODE_KEY) || 'dueDate';
+function setSavedSortMode(mode) {
+    window._currentSortMode = mode || 'dueDate';
+    try {
+        localStorage.setItem(SORT_MODE_KEY, window._currentSortMode);
+    } catch (e) {}
+}

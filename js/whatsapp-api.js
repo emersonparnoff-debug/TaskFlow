@@ -51,7 +51,7 @@ async function sendUserPasswordViaWhatsApp(usernameKey) {
     let plainPassword = '';
     if (user.recoveryToken) {
         try {
-            plainPassword = decodeURIComponent(escape(atob(user.recoveryToken)));
+            plainPassword = decodeUtf8Base64(user.recoveryToken);
         } catch (e) {
             plainPassword = '';
         }
@@ -61,7 +61,7 @@ async function sendUserPasswordViaWhatsApp(usernameKey) {
     if (!plainPassword) {
         plainPassword = 'TF' + Math.floor(100000 + Math.random() * 900000);
         user.passwordHash = await computeSha256Hex(`user::${String(user.id).toLowerCase()}::${plainPassword}`);
-        user.recoveryToken = btoa(unescape(encodeURIComponent(plainPassword)));
+        user.recoveryToken = encodeUtf8Base64(plainPassword);
         user.updatedAt = Date.now();
         await saveUserAccountToCloud(String(user.id).toLowerCase(), user);
     }

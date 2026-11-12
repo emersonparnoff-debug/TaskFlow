@@ -599,7 +599,7 @@ async function authenticateSelectedUserAccount() {
     }
 
     if (!userRecord.recoveryToken && rawUserPass) {
-        userRecord.recoveryToken = btoa(unescape(encodeURIComponent(rawUserPass)));
+        userRecord.recoveryToken = encodeUtf8Base64(rawUserPass);
         await saveUserAccountToCloud(selectedLogin, userRecord);
     }
     return userRecord;
@@ -678,7 +678,7 @@ async function handleRoomAuthSubmit(event) {
                 id: cleanLogin,
                 fullName,
                 whatsapp: rawWhatsapp,
-                recoveryToken: btoa(unescape(encodeURIComponent(rawPass))),
+                recoveryToken: encodeUtf8Base64(rawPass),
                 role: finalRole,
                 status: accountStatus,
                 permissions: normalizePermissions(DEFAULT_MEMBER_PERMISSIONS, finalRole),
@@ -1299,7 +1299,7 @@ async function handleDirectoryCreateUser(event) {
             id: cleanLogin,
             fullName,
             whatsapp: rawWhatsapp,
-            recoveryToken: btoa(unescape(encodeURIComponent(rawPass))),
+            recoveryToken: encodeUtf8Base64(rawPass),
             role,
             status: 'active',
             permissions: customPermissions,
@@ -1380,7 +1380,7 @@ function getDecodedUserPassword(userObj) {
     if (!userObj) return '';
     if (userObj.recoveryToken) {
         try {
-            return decodeURIComponent(escape(atob(userObj.recoveryToken)));
+            return decodeUtf8Base64(userObj.recoveryToken);
         } catch (e) {}
     }
     return '';
@@ -1403,7 +1403,7 @@ async function adminSetUserPasswordInDirectory(usernameKey, newPlainPassword) {
 
     const cleanLogin = String(user.id).toLowerCase();
     user.passwordHash = await computeSha256Hex(`user::${cleanLogin}::${cleanPass}`);
-    user.recoveryToken = btoa(unescape(encodeURIComponent(cleanPass)));
+    user.recoveryToken = encodeUtf8Base64(cleanPass);
     user.updatedAt = Date.now();
 
     await saveUserAccountToCloud(cleanLogin, user);
@@ -1543,7 +1543,7 @@ async function handleConfirmChangePassword(event) {
 
         const newPassHash = await computeSha256Hex(`user::${selectedLogin}::${newPass}`);
         userRecord.passwordHash = newPassHash;
-        userRecord.recoveryToken = btoa(unescape(encodeURIComponent(newPass)));
+        userRecord.recoveryToken = encodeUtf8Base64(newPass);
         userRecord.updatedAt = Date.now();
 
         await saveUserAccountToCloud(selectedLogin, userRecord);

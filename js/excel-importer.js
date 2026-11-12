@@ -413,6 +413,8 @@ async function confirmExcelImportTasks() {
             assignee: subAssignee,
             hours: roundHours1Dec(it.hours, 2),
             completed: false,
+            isGrouped: Boolean(it.isGrouped || String(it.subId || '').includes('_grp_') || String(it.itemId || '').startsWith('GRP-')),
+            groupedCount: Number(it.groupedCount) || 0,
             innerTasks: []
         };
     });
@@ -443,4 +445,63 @@ async function confirmExcelImportTasks() {
     renderAll();
     await upsertTaskToCloud(newOrderTask);
     showToast(`Tarefa "${orderTitle}" criada com ${orderSubtasks.length} subtarefas atribuídas!`, 'success');
+}
+
+
+function groupSelectedExcelItems() {
+    if (!parsedExcelOrder || !Array.isArray(parsedExcelOrder.items)) return;
+
+    const selectedIndexes = [];
+    parsedExcelOrder.items.forEach((it, idx) => {
+        if (it.selected) selectedIndexes.push(idx);
+    });
+
+    if (selectedIndexes.length < 2) {
+        showToast('Marque pelo menos 2 itens na tabela para agrupar em uma única subtarefa.', 'info');
+        return;
+    }
+
+    let sumHours = 0;
+    let sumQtd = 0;
+    const descParts = [];
+    const idParts = [];
+    const codTers = new Set();
+    const firstIt = parsedExcelOrder.items[selectedIndexes[0]];
+
+    selectedIndexes.forEach(idx => {
+        const it = parsedExcelOrder.items[idx];
+        sumHours += Number(it.hours) || 0;
+        sumQtd += Number(it.qtd) || 0;
+        if (it.itemId) idParts.push('#' + String(it.itemId).padStart(2, '0'));
+        if (it.desc) {
+            const cleanShort = String(it.desc).split('(')[0].trim() || String(it.desc).trim();
+            descParts.push(cleanShort);
+        }
+        if (it.codTer) codTers.add(it.codTer);
+    });
+
+    const groupedItem = {
+        subId: 'xls_sub_grp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
+        itemId: 'GRP-' + firstIt.itemId,
+        qtd: sumQtd || selectedIndexes.length,
+        unid: firstIt.unid || 'UN',
+        codTer: Array.from(codTers).join('/'),
+        rev: firstIt.rev || '00',
+        section: firstIt.section,
+        desc: `[AGRUPADO ${idParts.join(', ')}] ` + descParts.join(' + '),
+        hours: roundHours1Dec(sumHours, 0.1),
+        selected: true,
+        isGrouped: true,
+        groupedCount: selectedIndexes.length,
+        assignee: firstIt.assignee,
+        dependsOn: null
+    };
+
+    for (let i = selectedIndexes.length - 1; i >= 0; i--) {
+        parsedExcelOrder.items.splice(selectedIndexes[i], 1);
+    }
+
+    parsedExcelOrder.items.splice(selectedIndexes[0], 0, groupedItem);
+    renderExcelPreviewTable();
+    showToast(`${selectedIndexes.length} itens agrupados em uma única subtarefa (${formatTotalHours1Dec(sumHours)}h)!`, 'success');
 }
