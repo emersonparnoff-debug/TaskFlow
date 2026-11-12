@@ -415,6 +415,7 @@ async function confirmExcelImportTasks() {
             completed: false,
             isGrouped: Boolean(it.isGrouped || String(it.subId || '').includes('_grp_') || String(it.itemId || '').startsWith('GRP-')),
             groupedCount: Number(it.groupedCount) || 0,
+            groupedItems: Array.isArray(it.groupedItems) ? it.groupedItems : [],
             innerTasks: []
         };
     });
@@ -480,6 +481,17 @@ function groupSelectedExcelItems() {
         if (it.codTer) codTers.add(it.codTer);
     });
 
+    const groupedChildren = selectedIndexes.map(idx => {
+        const it = parsedExcelOrder.items[idx];
+        return {
+            id: it.subId || ('xls_ch_' + idx + '_' + Date.now()),
+            text: formatSubtaskFromOrderItem(it),
+            hours: roundHours1Dec(it.hours, 2),
+            assignee: it.assignee || firstIt.assignee || '',
+            completed: false
+        };
+    });
+
     const groupedItem = {
         subId: 'xls_sub_grp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
         itemId: 'GRP-' + firstIt.itemId,
@@ -493,6 +505,7 @@ function groupSelectedExcelItems() {
         selected: true,
         isGrouped: true,
         groupedCount: selectedIndexes.length,
+        groupedItems: groupedChildren,
         assignee: firstIt.assignee,
         dependsOn: null
     };

@@ -105,6 +105,42 @@ function getSubtaskQueuePriorityTier(subOrItem) {
     return 3; // Outros motivos de aguardando
 }
 
+/**
+ * Extrai a lista em cascata das subtarefas originais que compõem uma subtarefa agrupada.
+ * Funciona tanto para subtarefas recém-agrupadas (que possuem `groupedItems`) quanto para
+ * subtarefas já agrupadas anteriormente a partir do texto (`[Agrupado (15)] item1 + item2...`).
+ */
+function getGroupedSubtaskItemsList(sub) {
+    if (!sub) return [];
+    if (Array.isArray(sub.groupedItems) && sub.groupedItems.length > 0) {
+        return sub.groupedItems;
+    }
+    if (!isSubtaskGroupedItem(sub)) return [];
+
+    const rawText = String(sub.text || '').trim();
+    // Remove prefixo "[Agrupado (N)]" ou "[#GRP-...]"
+    let cleaned = rawText
+        .replace(/^\[Agrupado\s*\(\d+\)\]\s*/i, '')
+        .replace(/^\[#GRP-[^\]]+\](?:\s*\[[^\]]+\])?\s*\[AGRUPADO[^\]]*\]\s*/i, '');
+
+    let parts = [];
+    if (cleaned.includes(' + ')) {
+        parts = cleaned.split(' + ').map(p => p.trim()).filter(Boolean);
+    } else if (cleaned.includes(' | ')) {
+        parts = cleaned.split(' | ').map(p => p.trim()).filter(Boolean);
+    }
+
+    if (parts.length <= 1) return [];
+    const avgHours = Math.max(0.1, Math.round(((Number(sub.hours) || 2) / parts.length) * 10) / 10);
+    return parts.map((txt, idx) => ({
+        id: (sub.id || 'sub') + '_part_' + idx,
+        text: txt,
+        hours: avgHours,
+        assignee: sub.assignee || '',
+        completed: Boolean(sub.completed)
+    }));
+}
+
 function getWaitingReasonColors(reason, type = 'button') {
     const r = String(reason || '')
         .toLowerCase()
@@ -126,6 +162,7 @@ function getWaitingReasonColors(reason, type = 'button') {
         return 'bg-emerald-400 hover:bg-emerald-300 text-slate-950 border-emerald-600 shadow-sm font-extrabold';
     }
 
+    // 2. Aprovação do cliente -> Azul
     if (r.includes('aprovacao do cliente') || r.includes('aprovacao')) {
         if (type === 'bg') {
             return 'bg-blue-600 hover:bg-blue-500 border-l-4 border-l-blue-950 ring-1 ring-blue-400';
@@ -139,6 +176,7 @@ function getWaitingReasonColors(reason, type = 'button') {
         return 'bg-blue-600 hover:bg-blue-500 text-white border-blue-700 shadow-sm';
     }
 
+    // 3. Aguardando desenho -> Fúcsia / Magenta
     if (r.includes('aguardando desenho') || r.includes('desenho')) {
         if (type === 'bg') {
             return 'bg-fuchsia-600 hover:bg-fuchsia-500 border-l-4 border-l-fuchsia-950 ring-1 ring-fuchsia-400';
@@ -152,7 +190,35 @@ function getWaitingReasonColors(reason, type = 'button') {
         return 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white border-fuchsia-700 shadow-sm';
     }
 
-    // Padrão (Laranja / Amber) para os demais motivos (ex: Liberação da madeira, Falta de material, etc.)
+    // 4. Medida de obra (ou Definição de medidas) -> Cinza Escuro
+    if (r.includes('medida de obra') || r.includes('definicao de medidas') || r.includes('medida')) {
+        if (type === 'bg') {
+            return 'bg-slate-700 hover:bg-slate-600 border-l-4 border-l-slate-950 ring-1 ring-slate-500 text-white';
+        }
+        if (type === 'pill') {
+            return 'border-slate-600/80 bg-slate-700/20 dark:bg-slate-800/90 text-slate-800 dark:text-slate-200 ring-1 ring-slate-500/40';
+        }
+        if (type === 'badge') {
+            return 'bg-slate-700/15 border-slate-600/40 text-slate-800 dark:text-slate-200';
+        }
+        return 'bg-slate-700 hover:bg-slate-600 text-white border-slate-800 shadow-sm';
+    }
+
+    // 5. Liberação da madeira -> Marrom (Brown / Amber-900)
+    if (r.includes('liberacao da madeira') || r.includes('madeira')) {
+        if (type === 'bg') {
+            return 'bg-amber-900 hover:bg-amber-800 border-l-4 border-l-stone-950 ring-1 ring-amber-700 text-amber-50';
+        }
+        if (type === 'pill') {
+            return 'border-amber-800/75 bg-amber-900/20 dark:bg-amber-950/85 text-amber-950 dark:text-amber-200 ring-1 ring-amber-800/40';
+        }
+        if (type === 'badge') {
+            return 'bg-amber-900/20 border-amber-800/45 text-amber-950 dark:text-amber-200';
+        }
+        return 'bg-amber-900 hover:bg-amber-800 text-white border-amber-950 shadow-sm';
+    }
+
+    // Padrão (Laranja / Amber) para os demais motivos (ex: Falta de material, etc.)
     if (type === 'bg') {
         return 'bg-amber-500 hover:bg-amber-400 border-l-4 border-l-amber-900 ring-1 ring-amber-400';
     }
@@ -261,14 +327,33 @@ async function groupSelectedCardSubtasks(taskId) {
     let totalHours = 0;
     const combinedTexts = [];
     const combinedInnerTasks = [];
+    const combinedGroupedItems = [];
     const assigneesSet = new Set();
     let anyWaiting = false;
     const waitingReasons = new Set();
 
     sortedIndexes.forEach(idx => {
         const s = task.subtasks[idx];
-        totalHours += Math.max(0.1, Number(s.hours) || 2);
-        if (s.text) combinedTexts.push(s.text.trim());
+        const sHours = Math.max(0.1, Number(s.hours) || 2);
+        totalHours += sHours;
+        const subChildren = getGroupedSubtaskItemsList(s);
+        if (subChildren.length > 0) {
+            subChildren.forEach(ch => {
+                combinedGroupedItems.push({ ...ch });
+                if (ch.text) combinedTexts.push(ch.text.trim());
+            });
+        } else {
+            if (s.text) combinedTexts.push(s.text.trim());
+            combinedGroupedItems.push({
+                id: s.id || ('grp_it_' + idx + '_' + Date.now()),
+                text: s.text || '',
+                hours: sHours,
+                assignee: s.assignee || '',
+                completed: Boolean(s.completed),
+                waiting: Boolean(s.waiting),
+                waitingReason: s.waitingReason || ''
+            });
+        }
         if (s.assignee) {
             parseAssigneesList(s.assignee).forEach(a => assigneesSet.add(a));
         }
@@ -283,7 +368,7 @@ async function groupSelectedCardSubtasks(taskId) {
 
     const groupedSubtask = {
         id: 'sub_grp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        text: `[Agrupado (${sortedIndexes.length})] ` + combinedTexts.join(' + '),
+        text: `[Agrupado (${combinedGroupedItems.length})] ` + combinedTexts.join(' + '),
         assignee: Array.from(assigneesSet).join(', ') || firstSub.assignee || '',
         hours: roundHours1Dec(totalHours, 0.1),
         completed: sortedIndexes.every(idx => Boolean(task.subtasks[idx].completed)),
@@ -291,7 +376,8 @@ async function groupSelectedCardSubtasks(taskId) {
         waitingReason: anyWaiting ? Array.from(waitingReasons).join(' / ') : '',
         innerTasks: combinedInnerTasks,
         isGrouped: true,
-        groupedCount: sortedIndexes.length,
+        groupedCount: combinedGroupedItems.length,
+        groupedItems: combinedGroupedItems,
         originalOrder: firstSub.originalOrder ?? sortedIndexes[0]
     };
 
@@ -316,6 +402,46 @@ function toggleModalSubtaskGroupSelect(subIdx, checked) {
     renderModalSubtasks();
 }
 
+
+function toggleGroupedChildItemInModal(subIdx, childIdx, checked) {
+    ensureSubtaskStructure(modalSubtasks);
+    const sub = modalSubtasks[subIdx];
+    if (!sub) return;
+    if (!Array.isArray(sub.groupedItems) || sub.groupedItems.length === 0) {
+        sub.groupedItems = getGroupedSubtaskItemsList(sub);
+    }
+    if (!sub.groupedItems[childIdx]) return;
+    sub.groupedItems[childIdx].completed = Boolean(checked);
+    sub.completed = sub.groupedItems.length > 0 && sub.groupedItems.every(ch => Boolean(ch.completed));
+    renderModalSubtasks();
+}
+
+function unmergeGroupedSubtaskInModal(subIdx) {
+    ensureSubtaskStructure(modalSubtasks);
+    const sub = modalSubtasks[subIdx];
+    if (!sub) return;
+    const children = getGroupedSubtaskItemsList(sub);
+    if (children.length <= 1) return;
+
+    const restoredSubs = children.map((ch, idx) => ({
+        id: ch.id || ('sub_ungrp_' + idx + '_' + Date.now()),
+        text: ch.text || `Subtarefa #${idx + 1}`,
+        assignee: ch.assignee || sub.assignee || '',
+        hours: roundHours1Dec(ch.hours || (Number(sub.hours || 2) / children.length), 0.1),
+        completed: Boolean(ch.completed ?? sub.completed),
+        waiting: Boolean(ch.waiting ?? sub.waiting),
+        waitingReason: ch.waitingReason || sub.waitingReason || '',
+        isGrouped: false,
+        groupedCount: 0,
+        innerTasks: []
+    }));
+
+    modalSubtasks.splice(subIdx, 1, ...restoredSubs);
+    activeExpandedSubtaskIdx = -1;
+    renderModalSubtasks();
+    showToast(`${restoredSubs.length} subtarefas desagrupadas individualmente!`, 'info');
+}
+
 function groupSelectedModalSubtasks() {
     ensureSubtaskStructure(modalSubtasks);
     const selectedIndexes = [];
@@ -332,14 +458,33 @@ function groupSelectedModalSubtasks() {
     let totalHours = 0;
     const combinedTexts = [];
     const combinedInnerTasks = [];
+    const combinedGroupedItems = [];
     const assigneesSet = new Set();
     let anyWaiting = false;
     const waitingReasons = new Set();
 
     selectedIndexes.forEach(idx => {
         const s = modalSubtasks[idx];
-        totalHours += Math.max(0.1, Number(s.hours) || 2);
-        if (s.text) combinedTexts.push(s.text.trim());
+        const sHours = Math.max(0.1, Number(s.hours) || 2);
+        totalHours += sHours;
+        const subChildren = getGroupedSubtaskItemsList(s);
+        if (subChildren.length > 0) {
+            subChildren.forEach(ch => {
+                combinedGroupedItems.push({ ...ch });
+                if (ch.text) combinedTexts.push(ch.text.trim());
+            });
+        } else {
+            if (s.text) combinedTexts.push(s.text.trim());
+            combinedGroupedItems.push({
+                id: s.id || ('grp_it_' + idx + '_' + Date.now()),
+                text: s.text || '',
+                hours: sHours,
+                assignee: s.assignee || '',
+                completed: Boolean(s.completed),
+                waiting: Boolean(s.waiting),
+                waitingReason: s.waitingReason || ''
+            });
+        }
         if (s.assignee) {
             parseAssigneesList(s.assignee).forEach(a => assigneesSet.add(a));
         }
@@ -354,7 +499,7 @@ function groupSelectedModalSubtasks() {
 
     const groupedSubtask = {
         id: 'sub_grp_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-        text: `[Agrupado (${selectedIndexes.length})] ` + combinedTexts.join(' + '),
+        text: `[Agrupado (${combinedGroupedItems.length})] ` + combinedTexts.join(' + '),
         assignee: Array.from(assigneesSet).join(', ') || firstSub.assignee || '',
         hours: roundHours1Dec(totalHours, 0.1),
         completed: selectedIndexes.every(idx => Boolean(modalSubtasks[idx].completed)),
@@ -362,7 +507,8 @@ function groupSelectedModalSubtasks() {
         waitingReason: anyWaiting ? Array.from(waitingReasons).join(' / ') : '',
         innerTasks: combinedInnerTasks,
         isGrouped: true,
-        groupedCount: selectedIndexes.length,
+        groupedCount: combinedGroupedItems.length,
+        groupedItems: combinedGroupedItems,
         _selectedForGroup: false
     };
 
@@ -2204,8 +2350,10 @@ function renderModalSubtasks() {
         const subModalDl = modalDeadlineEval.subtaskMap[sIdx] || {};
         const subModalExceeds = Boolean(subModalDl.exceedsDeadline && !sub.completed);
         const innerList = sub.innerTasks || [];
+        const groupedChildren = getGroupedSubtaskItemsList(sub);
         const isExpanded = activeExpandedSubtaskIdx === sIdx;
         const doneInner = innerList.filter(i => i.completed).length;
+        const doneGrouped = groupedChildren.filter(g => g.completed).length;
         const isSubOwner = isModalTaskOwner || doesAssigneeMatchUser(sub.assignee, currentAuthor, currentUserLogin);
 
         const newInnerDepOptions = `<option value="">🔓 Sem dependência</option>` +
@@ -2263,9 +2411,9 @@ function renderModalSubtasks() {
                             isExpanded
                                 ? 'bg-indigo-600 text-white shadow-sm'
                                 : 'bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300 border border-indigo-500/20'
-                        }" title="${isExpanded ? 'Ocultar tarefas internas' : 'Mostrar tarefas internas desta subtarefa'}">
-                            <i class="fa-solid ${isExpanded ? 'fa-eye-slash' : 'fa-diagram-project'} text-[10px]"></i>
-                            <span>${isExpanded ? 'Ocultar' : 'Tarefas'} (${doneInner}/${innerList.length})</span>
+                        }" title="${isExpanded ? 'Ocultar detalhes e subtarefas agrupadas' : 'Mostrar subtarefas agrupadas em cascata e tarefas internas'}">
+                            <i class="fa-solid ${isExpanded ? 'fa-eye-slash' : (groupedChildren.length > 0 ? 'fa-sitemap' : 'fa-diagram-project')} text-[10px]"></i>
+                            <span>${isExpanded ? 'Ocultar' : (groupedChildren.length > 0 ? 'Agrupadas' : 'Tarefas')} (${groupedChildren.length > 0 ? `${doneGrouped}/${groupedChildren.length}` : `${doneInner}/${innerList.length}`})</span>
                         </button>
                         <button type="button" onclick="removeModalSubtask(${sIdx})" class="text-slate-400 hover:text-rose-500 transition px-1.5 py-1" title="Excluir subtarefa">
                             <i class="fa-solid fa-trash-can text-xs"></i>
@@ -2282,7 +2430,36 @@ function renderModalSubtasks() {
                 ` : ''}
 
                 <!-- Painel Interno (Oculto por padrão, aberto apenas quando solicitado) -->
-                <div class="${isExpanded ? 'block' : 'hidden'} p-3 border-t border-slate-200/80 dark:border-slate-700/80 space-y-2.5 bg-slate-100/60 dark:bg-slate-900/40">
+                <div class="${isExpanded ? 'block' : 'hidden'} p-3 border-t border-slate-200/80 dark:border-slate-700/80 space-y-3 bg-slate-100/60 dark:bg-slate-900/40">
+                    ${groupedChildren.length > 0 ? `
+                        <!-- Exibição em Cascata das Subtarefas Agrupadas -->
+                        <div class="p-2.5 rounded-xl bg-emerald-500/5 dark:bg-emerald-950/20 border border-emerald-500/30 space-y-2">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <span class="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-sitemap text-emerald-500"></i>
+                                    <span>Subtarefas Agrupadas em Cascata (${doneGrouped}/${groupedChildren.length} concluídas)</span>
+                                </span>
+                                <button type="button" onclick="unmergeGroupedSubtaskInModal(${sIdx})" class="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-600 text-rose-600 dark:text-rose-400 hover:text-white border border-rose-500/25 text-[10px] font-bold transition flex items-center gap-1" title="Separar novamente estas subtarefas em itens individuais">
+                                    <i class="fa-solid fa-link-slash text-[9px]"></i> Desagrupar Tudo
+                                </button>
+                            </div>
+                            <div class="pl-3 border-l-2 border-emerald-500/40 space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                                ${groupedChildren.map((chItem, cIdx) => `
+                                    <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700 text-xs shadow-sm">
+                                        <label class="flex items-center gap-2 min-w-0 flex-1 cursor-pointer">
+                                            <span class="text-emerald-500 font-mono text-[10px] font-bold shrink-0">↳ #${cIdx + 1}</span>
+                                            <input type="checkbox" ${chItem.completed ? 'checked' : ''} onchange="toggleGroupedChildItemInModal(${sIdx}, ${cIdx}, this.checked)" class="rounded text-emerald-600 w-3.5 h-3.5 cursor-pointer shrink-0">
+                                            <span class="truncate font-semibold text-slate-700 dark:text-slate-200 ${chItem.completed ? 'line-through opacity-55' : ''}" title="${escapeHtml(chItem.text)}">${escapeHtml(chItem.text)}</span>
+                                        </label>
+                                        <span class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/25 font-mono text-[10px] font-bold shrink-0">
+                                            ${formatTotalHours1Dec(chItem.hours || (Number(sub.hours || 2) / groupedChildren.length))}h
+                                        </span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
                     <div class="flex flex-wrap items-center justify-between gap-1.5">
                         <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                             <i class="fa-solid fa-list-check text-emerald-500 mr-1"></i>Tarefas internas da subtarefa & Dependências:
