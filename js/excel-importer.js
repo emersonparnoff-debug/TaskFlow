@@ -34,6 +34,9 @@ function resetExcelImportModalState() {
     const batchInp = document.getElementById('excelBatchSubtaskHoursInput');
     if (batchInp) batchInp.value = '';
 
+    const leadInp = document.getElementById('importDeadlineLeadDaysInput');
+    if (leadInp) leadInp.value = 5;
+
     const tbody = document.getElementById('excelPreviewTableBody');
     if (tbody) tbody.innerHTML = '';
 
@@ -326,12 +329,38 @@ function distributeExcelPreviewHours(silent = false, explicitHoursPerSub = null)
     const activeItems = parsedExcelOrder.items.filter(i => i.selected);
     if (activeItems.length === 0) return;
 
-    const dueStr = document.getElementById('importDefaultDueDate')?.value || getLocalDateStr(7);
+    const rawDueStr = document.getElementById('importDefaultDueDate')?.value || getLocalDateStr(7);
+    const leadDaysVal = typeof getTaskDeadlineLeadDays === 'function'
+        ? getTaskDeadlineLeadDays(parseInt(document.getElementById('importDeadlineLeadDaysInput')?.value, 10))
+        : Math.max(0, parseInt(document.getElementById('importDeadlineLeadDaysInput')?.value, 10) || 5);
+    const dueStr = (typeof getEffectiveTaskDeadlineDateStr === 'function')
+        ? getEffectiveTaskDeadlineDateStr(rawDueStr, leadDaysVal)
+        : rawDueStr;
     const todayStr = getLocalDateStr(0);
     const d1 = new Date(todayStr + 'T00:00:00');
     const d2 = new Date(dueStr + 'T00:00:00');
-    const diffDays = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) || 1);
-    const totalAvailableHours = diffDays * 8; // 8 horas diárias
+    let diffDays = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) || 1);
+    let totalAvailableHours = diffDays * 8;
+    if (typeof evaluateTimelineDayStatus === 'function' && typeof getWorkSettings === 'function') {
+        const stXls = getWorkSettings();
+        const defAuthor = (document.getElementById('importDefaultAuthor')?.value || currentAuthor || '').trim() || null;
+        let curMs = d1.getTime();
+        const maxMs = Math.max(curMs, d2.getTime());
+        let wDays = 0;
+        let wHours = 0;
+        while (curMs <= maxMs) {
+            const ev = evaluateTimelineDayStatus(curMs, stXls, defAuthor);
+            if (ev.isWorking && ev.dailyWorkHours > 0) {
+                wDays++;
+                wHours += Number(ev.dailyWorkHours) || 8;
+            }
+            curMs += 86400000;
+        }
+        if (wDays > 0 && wHours > 0) {
+            diffDays = wDays;
+            totalAvailableHours = roundHours1Dec(wHours, 0.5);
+        }
+    }
 
     const suggestedHours = roundHours1Dec(totalAvailableHours / activeItems.length, 0.1);
 
@@ -396,6 +425,9 @@ async function confirmExcelImportTasks() {
     const category   = 'servico';
     const priority   = document.getElementById('importDefaultPriority').value || 'alta';
     const dueDate    = document.getElementById('importDefaultDueDate').value || getLocalDateStr(7);
+    const deadlineLeadDays = typeof getTaskDeadlineLeadDays === 'function'
+        ? getTaskDeadlineLeadDays(parseInt(document.getElementById('importDeadlineLeadDaysInput')?.value, 10))
+        : Math.max(0, parseInt(document.getElementById('importDeadlineLeadDaysInput')?.value, 10) || 5);
     const author     = (document.getElementById('importDefaultAuthor').value || '').trim() || currentAuthor;
 
     const chosenItems = parsedExcelOrder.items.filter(i => i.selected);
@@ -432,6 +464,7 @@ async function confirmExcelImportTasks() {
         category,
         priority,
         dueDate,
+        deadlineLeadDays,
         status: 'todo',
         estimatedHours: finalMacroHours,
         macroTotalHours: finalMacroHours,
@@ -517,4 +550,24 @@ function groupSelectedExcelItems() {
     parsedExcelOrder.items.splice(selectedIndexes[0], 0, groupedItem);
     renderExcelPreviewTable();
     showToast(`${selectedIndexes.length} itens agrupados em uma única subtarefa (${formatTotalHours1Dec(sumHours)}h)!`, 'success');
+}
+
+
+function stepExcelImportLeadDays(delta) {
+    const inp = document.getElementById('importDeadlineLeadDaysInput');
+    if (!inp) return;
+    const cur = parseInt(inp.value, 10);
+    inp.value = Math.max(0, (isNaN(cur) ? 5 : cur) + delta);
+    distributeExcelPreviewHours(true);
+    renderExcelPreviewTable();
+}
+
+function handleExcelImportLeadDaysInput(val) {
+    const inp = document.getElementById('importDeadlineLeadDaysInput');
+    const parsed = parseInt(val, 10);
+    if (inp && !isNaN(parsed) && parsed < 0) {
+        inp.value = 0;
+    }
+    distributeExcelPreviewHours(true);
+    renderExcelPreviewTable();
 }

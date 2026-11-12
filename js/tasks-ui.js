@@ -763,11 +763,72 @@ function formatCreatedAtDate(createdAtMs, shortFormat = false) {
     return shortFormat ? `${day}/${month}` : `${day}/${month}/${year}`;
 }
 
-function getTaskDueDateEndMs(dueDateStr) {
-    if (!dueDateStr) return null;
+const DEFAULT_DEADLINE_LEAD_DAYS = 5;
+
+function getTaskDeadlineLeadDays(taskOrVal) {
+    if (typeof taskOrVal === 'number' && !isNaN(taskOrVal)) {
+        return Math.max(0, Math.round(taskOrVal));
+    }
+    if (taskOrVal && typeof taskOrVal === 'object') {
+        if (taskOrVal.deadlineLeadDays !== undefined && taskOrVal.deadlineLeadDays !== null && !isNaN(Number(taskOrVal.deadlineLeadDays))) {
+            return Math.max(0, Math.round(Number(taskOrVal.deadlineLeadDays)));
+        }
+    }
+    return DEFAULT_DEADLINE_LEAD_DAYS;
+}
+
+function getEffectiveTaskDeadlineDateStr(dueDateStr, leadDaysVal = DEFAULT_DEADLINE_LEAD_DAYS) {
+    if (!dueDateStr) return '';
     const parts = String(dueDateStr).split('-').map(Number);
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return dueDateStr;
+    const leadDays = getTaskDeadlineLeadDays(leadDaysVal);
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    d.setDate(d.getDate() - leadDays);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getTaskDueDateEndMs(dueDateStr, leadDaysVal = 0) {
+    if (!dueDateStr) return null;
+    const effStr = getEffectiveTaskDeadlineDateStr(dueDateStr, leadDaysVal);
+    const parts = String(effStr).split('-').map(Number);
     if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
     return new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999).getTime();
+}
+
+async function adjustTaskDeadlineLeadDays(taskId, delta, directValue = null, event = null) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    const cur = getTaskDeadlineLeadDays(task);
+    const nextVal = directValue !== null ? parseInt(directValue, 10) : (cur + delta);
+    task.deadlineLeadDays = Math.max(0, isNaN(nextVal) ? DEFAULT_DEADLINE_LEAD_DAYS : nextVal);
+    task.updatedAt = Date.now();
+    saveLocalCacheOnly();
+    renderAll();
+    await upsertTaskToCloud(task);
+    const effDateStr = getEffectiveTaskDeadlineDateStr(task.dueDate, task.deadlineLeadDays);
+    showToast(
+        `Fim do prazo de "${task.title}" ajustado para ${task.deadlineLeadDays}d antes do vencimento (${formatDisplayDate(effDateStr)})!`,
+        'info'
+    );
+}
+
+function stepModalLeadDays(delta) {
+    const inp = document.getElementById('taskDeadlineLeadDaysInput');
+    if (!inp) return;
+    const cur = parseInt(inp.value, 10);
+    const nextVal = Math.max(0, (isNaN(cur) ? DEFAULT_DEADLINE_LEAD_DAYS : cur) + delta);
+    inp.value = nextVal;
+    renderModalSubtasks();
+}
+
+function handleModalLeadDaysInput(val) {
+    const inp = document.getElementById('taskDeadlineLeadDaysInput');
+    const parsed = parseInt(val, 10);
+    if (inp && !isNaN(parsed) && parsed < 0) {
+        inp.value = 0;
+    }
+    renderModalSubtasks();
 }
 
 /**
@@ -803,8 +864,11 @@ function evaluateTaskSubtasksDeadlineInfo(taskOrObj) {
         subtaskMap: {} // sIdx -> { startMs, endMs, exceedsDeadline, excessHours, endFormatted }
     };
     if (!taskOrObj) return result;
-    const dueEndMs = getTaskDueDateEndMs(taskOrObj.dueDate);
+    const leadDays = getTaskDeadlineLeadDays(taskOrObj);
+    const dueEndMs = getTaskDueDateEndMs(taskOrObj.dueDate, leadDays);
     result.dueEndMs = dueEndMs;
+    result.leadDays = leadDays;
+    result.effectiveDeadlineStr = getEffectiveTaskDeadlineDateStr(taskOrObj.dueDate, leadDays);
 
     const settings = getWorkSettings();
     const subs = Array.isArray(taskOrObj.subtasks) ? taskOrObj.subtasks : [];
@@ -978,9 +1042,18 @@ function renderTaskCardHTML(task) {
                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] font-medium" title="Data de criação da tarefa principal: ${formatCreatedAtDate(task.createdAt, false)}">
                             <i class="fa-solid fa-calendar-plus text-indigo-500 text-[9px]"></i> Criada: ${formatCreatedAtDate(task.createdAt, false)}
                         </span>
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-medium ${dueBadgeClass}" title="Data de vencimento (Prazo Final): ${formatDisplayDate(task.dueDate)}">
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-medium ${dueBadgeClass}" title="Data de vencimento: ${formatDisplayDate(task.dueDate)}">
                             <i class="fa-solid ${dueIcon}"></i> Venc: ${formatDisplayDate(task.dueDate)}
                         </span>
+                        <div class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg border border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold" onclick="event.stopPropagation()" title="Fim do Prazo da Tarefa: ${formatDisplayDate(deadlineEval.effectiveDeadlineStr)} (${deadlineEval.leadDays} dia(s) antes do vencimento — Mínimo: 0)">
+                            <i class="fa-solid fa-flag-checkered text-[9px] text-indigo-500"></i>
+                            <span>Fim Prazo: ${formatDisplayDate(deadlineEval.effectiveDeadlineStr)}</span>
+                            <div class="inline-flex items-center gap-0.5 bg-white/80 dark:bg-slate-900/80 rounded px-1 py-0.2 border border-indigo-500/20 ml-0.5">
+                                <button type="button" onclick="adjustTaskDeadlineLeadDays('${task.id}', -1, null, event)" ${deadlineEval.leadDays <= 0 ? 'disabled' : ''} class="w-3.5 h-3.5 rounded hover:bg-indigo-500 hover:text-white disabled:opacity-30 flex items-center justify-center font-extrabold text-[9px] transition" title="Diminuir antecedência (mínimo 0)">-</button>
+                                <span class="font-mono text-[9px] font-extrabold px-0.5">${deadlineEval.leadDays}d</span>
+                                <button type="button" onclick="adjustTaskDeadlineLeadDays('${task.id}', 1, null, event)" class="w-3.5 h-3.5 rounded hover:bg-indigo-500 hover:text-white flex items-center justify-center font-extrabold text-[9px] transition" title="Aumentar antecedência">+</button>
+                            </div>
+                        </div>
                         ${subtasks.length > 0 ? `
                             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${subDoneCount === subtasks.length ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30' : 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20'}" title="Progresso das Subtarefas">
                                 <i class="fa-solid fa-boxes-stacked text-[9px]"></i> ${subDoneCount}/${subtasks.length} (${subPercent}%)
@@ -1052,8 +1125,11 @@ function renderTaskCardHTML(task) {
                 </div>
 
                 ${subtasks.length > 0 ? `
-                    <div class="w-full bg-slate-100 dark:bg-slate-800 h-1 rounded-full overflow-hidden">
-                        <div class="bg-gradient-to-r from-indigo-500 to-emerald-500 h-full rounded-full transition-all duration-300" style="width: ${subPercent}%"></div>
+                    <div class="relative w-full h-4 rounded-lg overflow-hidden bg-indigo-800 dark:bg-indigo-950 border border-indigo-900 dark:border-indigo-800 shadow-inner" title="Percentual de execução da tarefa: ${subPercent}% concluído (${doneTaskHours}h de ${totalTaskHours}h)">
+                        <div class="h-full bg-indigo-300 dark:bg-indigo-400 transition-all duration-300" style="width: ${subPercent}%"></div>
+                        <div class="absolute inset-0 flex items-center justify-center text-[9px] font-extrabold tracking-wide ${subPercent >= 50 ? 'text-slate-950' : 'text-white drop-shadow-sm'}">
+                            ${subPercent}% executado (${subDoneCount}/${subtasks.length})
+                        </div>
                     </div>
                 ` : ''}
             </div>
@@ -1407,6 +1483,8 @@ function openTaskModal(taskId = null) {
         
         document.getElementById('taskPriorityInput').value = task.priority || 'media';
         document.getElementById('taskDueDateInput').value = task.dueDate || getLocalDateStr(0);
+        const leadInpEdit = document.getElementById('taskDeadlineLeadDaysInput');
+        if (leadInpEdit) leadInpEdit.value = getTaskDeadlineLeadDays(task);
         document.getElementById('taskStatusInput').value = task.status || 'todo';
         const waitReasonInp = document.getElementById('taskWaitingReasonInput');
         if (waitReasonInp) waitReasonInp.value = task.waitingReason || '';
@@ -1423,7 +1501,9 @@ function openTaskModal(taskId = null) {
         document.getElementById('modalTitle').innerHTML = `<i class="fa-solid fa-plus text-indigo-500"></i><span>Nova Tarefa</span>`;
         document.getElementById('taskIdInput').value = '';
         document.getElementById('taskAuthorInput').value = currentAuthor || '';
-        document.getElementById('taskDueDateInput').value = getLocalDateStr(0);
+        document.getElementById('taskDueDateInput').value = getLocalDateStr(7);
+        const leadInpNew = document.getElementById('taskDeadlineLeadDaysInput');
+        if (leadInpNew) leadInpNew.value = DEFAULT_DEADLINE_LEAD_DAYS;
         
         document.getElementById('taskStatusInput').value = 'todo';
         const waitReasonInp = document.getElementById('taskWaitingReasonInput');
@@ -2056,12 +2136,27 @@ function autoDistributeModalSubtaskHours(preferredMode = 'macro') {
 
     const completedHoursSum = completedSubs.reduce((acc, s) => acc + (Number(s.hours) || 2), 0);
 
-    const dueStr = document.getElementById('taskDueDateInput')?.value || getLocalDateStr(1);
+    const rawDueStr = document.getElementById('taskDueDateInput')?.value || getLocalDateStr(7);
+    const modalLeadDays = getTaskDeadlineLeadDays(parseInt(document.getElementById('taskDeadlineLeadDaysInput')?.value, 10));
+    const dueStr = getEffectiveTaskDeadlineDateStr(rawDueStr, modalLeadDays) || rawDueStr;
     const todayStr = getLocalDateStr(0);
-    const d1 = new Date(todayStr + 'T00:00:00');
-    const d2 = new Date(dueStr + 'T00:00:00');
-    const diffDays = Math.max(1, Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) || 1);
-    const totalAvailableHours = diffDays * 8;
+    const stModal = getWorkSettings();
+    const modalMember = (document.getElementById('taskAuthorInput')?.value || currentAuthor || '').trim() || null;
+    const startMsModal = new Date(todayStr + 'T00:00:00').getTime();
+    const endMsModal = Math.max(startMsModal, new Date(dueStr + 'T00:00:00').getTime());
+    let diffDays = 0;
+    let totalAvailableHours = 0;
+    let curMsModal = startMsModal;
+    while (curMsModal <= endMsModal) {
+        const dEval = evaluateTimelineDayStatus(curMsModal, stModal, modalMember);
+        if (dEval.isWorking && dEval.dailyWorkHours > 0) {
+            diffDays++;
+            totalAvailableHours += Number(dEval.dailyWorkHours) || DAILY_WORK_HOURS;
+        }
+        curMsModal += 86400000;
+    }
+    diffDays = Math.max(1, diffDays);
+    totalAvailableHours = totalAvailableHours > 0 ? roundHours1Dec(totalAvailableHours, 0.5) : (diffDays * DAILY_WORK_HOURS);
     const remainingBudgetHours = Math.max(pendingSubs.length * 0.1, totalAvailableHours - completedHoursSum);
     const suggestedHours = Math.max(0.1, Math.round((remainingBudgetHours / pendingSubs.length) * 10) / 10);
 
@@ -2329,11 +2424,18 @@ function renderModalSubtasks() {
 
     const taskAuthorVal = document.getElementById('taskAuthorInput')?.value || '';
     const modalDueDateVal = document.getElementById('taskDueDateInput')?.value || '';
+    const modalLeadDaysVal = getTaskDeadlineLeadDays(parseInt(document.getElementById('taskDeadlineLeadDaysInput')?.value, 10));
+    const effDeadlineDateStr = getEffectiveTaskDeadlineDateStr(modalDueDateVal, modalLeadDaysVal);
+    const effLblEl = document.getElementById('modalEffectiveDeadlineLabel');
+    if (effLblEl) {
+        effLblEl.textContent = effDeadlineDateStr ? `(${formatDisplayDate(effDeadlineDateStr)})` : '';
+    }
     const editingTaskId = document.getElementById('taskIdInput')?.value || '';
     const existingTask = editingTaskId ? tasks.find(t => t.id === editingTaskId) : null;
     const modalDeadlineEval = evaluateTaskSubtasksDeadlineInfo({
         id: editingTaskId || null,
         dueDate: modalDueDateVal,
+        deadlineLeadDays: modalLeadDaysVal,
         createdAt: existingTask?.createdAt || Date.now(),
         simultaneous: Boolean(document.getElementById('taskSimultaneousInput')?.checked),
         subtasks: modalSubtasks
@@ -2562,6 +2664,7 @@ async function saveTaskForm(event) {
     const category = 'projeto';
     const priority = document.getElementById('taskPriorityInput').value;
     const dueDate = document.getElementById('taskDueDateInput').value;
+    const deadlineLeadDays = getTaskDeadlineLeadDays(parseInt(document.getElementById('taskDeadlineLeadDaysInput')?.value, 10));
     const status = document.getElementById('taskStatusInput').value;
     const waitingReason = status === 'waiting'
         ? (document.getElementById('taskWaitingReasonInput')?.value || '').trim()
@@ -2592,6 +2695,7 @@ async function saveTaskForm(event) {
                 category,
                 priority,
                 dueDate,
+                deadlineLeadDays,
                 status,
                 waiting: status === 'waiting',
                 waitingReason,
@@ -2612,6 +2716,7 @@ async function saveTaskForm(event) {
             category,
             priority,
             dueDate,
+            deadlineLeadDays,
             status,
             simultaneous,
             estimatedHours: finalMacroHours,
@@ -4479,24 +4584,53 @@ function evaluateTimelineDayStatus(dayMs, settings = null, memberName = null) {
     const isHoliday = Boolean(holidayName);
 
     const memberEntry = getMemberScheduleEntryForDate(dateIso, memberName, st);
-    const override = memberEntry ? memberEntry.type : (st.dateOverrides ? st.dateOverrides[dateIso] : undefined);
+    const rawOverride = !memberEntry && st.dateOverrides ? st.dateOverrides[dateIso] : undefined;
+    const override = memberEntry
+        ? memberEntry.type
+        : (typeof rawOverride === 'object' && rawOverride !== null ? rawOverride.type : rawOverride);
+    const customHoursVal = memberEntry && memberEntry.hours !== undefined && !isNaN(Number(memberEntry.hours))
+        ? Math.max(0, Number(memberEntry.hours))
+        : (typeof rawOverride === 'object' && rawOverride !== null && rawOverride.hours !== undefined && !isNaN(Number(rawOverride.hours))
+            ? Math.max(0, Number(rawOverride.hours))
+            : null);
+
+    // Base padrão do dia (antes de aplicar Hora Extra ou Folga)
+    const isNormallyWorkingDay = !isHoliday && !isWeekend && Boolean(st.workDays[dayOfWeek]);
+    const baseNormalHours = isNormallyWorkingDay ? DAILY_WORK_HOURS : 0;
 
     let isWorking = false;
     let isOvertime = false;
     let isVacation = false;
+    let isPartialOff = false;
+    let dailyWorkHours = 0;
+    let configuredDeltaHours = 0;
 
     if (override === 'vacation') {
         isWorking = false;
         isOvertime = false;
         isVacation = true;
+        dailyWorkHours = 0;
     } else if (override === 'overtime') {
         isWorking = true;
         isOvertime = true;
+        // Se for dia útil normal (8h), soma as horas extras informadas (ex: 8h + 2h = 10h).
+        // Se for fim de semana ou feriado (base 0h), usa diretamente o tempo de hora extra informado (padrão 8h se não especificado).
+        const extraH = customHoursVal !== null ? Math.max(0.5, customHoursVal) : (baseNormalHours > 0 ? 2 : DAILY_WORK_HOURS);
+        configuredDeltaHours = extraH;
+        dailyWorkHours = roundHours1Dec(baseNormalHours + extraH, 0.5);
     } else if (override === 'work') {
         isWorking = true;
         isOvertime = isWeekend || isHoliday;
+        dailyWorkHours = customHoursVal !== null && customHoursVal > 0 ? roundHours1Dec(customHoursVal, 0.5) : DAILY_WORK_HOURS;
+        configuredDeltaHours = dailyWorkHours;
     } else if (override === 'off') {
-        isWorking = false;
+        // Permite folga integral (8h de folga = 0h trabalhadas) ou folga parcial (ex: 3h de folga = 5h trabalhadas no dia!)
+        const offH = customHoursVal !== null ? Math.max(0.5, customHoursVal) : DAILY_WORK_HOURS;
+        configuredDeltaHours = offH;
+        const baseForOff = baseNormalHours > 0 ? baseNormalHours : DAILY_WORK_HOURS;
+        dailyWorkHours = Math.max(0, roundHours1Dec(baseForOff - offH, 0.5));
+        isWorking = dailyWorkHours > 0;
+        isPartialOff = isWorking && offH > 0;
         isOvertime = false;
     } else {
         // Comportamento padrão: Feriados e Sáb/Dom são FOLGA, a menos que marcados como Hora Extra
@@ -4504,29 +4638,42 @@ function evaluateTimelineDayStatus(dayMs, settings = null, memberName = null) {
             if (st.holidayOvertime) {
                 isWorking = true;
                 isOvertime = true;
+                dailyWorkHours = DAILY_WORK_HOURS;
+                configuredDeltaHours = DAILY_WORK_HOURS;
             } else {
                 isWorking = false;
+                dailyWorkHours = 0;
             }
         } else if (isWeekend) {
             if (st.workDays[dayOfWeek] || st.weekendOvertime) {
                 isWorking = true;
                 isOvertime = true;
+                dailyWorkHours = DAILY_WORK_HOURS;
+                configuredDeltaHours = DAILY_WORK_HOURS;
             } else {
                 isWorking = false;
+                dailyWorkHours = 0;
             }
         } else {
             isWorking = Boolean(st.workDays[dayOfWeek]);
             isOvertime = false;
+            dailyWorkHours = isWorking ? DAILY_WORK_HOURS : 0;
         }
     }
 
-    let statusBadgeText = '8h Útil';
+    let statusBadgeText = `${formatTotalHours1Dec(dailyWorkHours)}h Útil`;
     if (isVacation) {
         statusBadgeText = '🏖️ Férias (0h)';
     } else if (!isWorking) {
-        statusBadgeText = isHoliday ? 'Feriado (Folga)' : 'Folga (0h)';
+        statusBadgeText = isHoliday
+            ? 'Feriado (Folga)'
+            : `Folga (-${formatTotalHours1Dec(configuredDeltaHours || DAILY_WORK_HOURS)}h • 0h)`;
+    } else if (isPartialOff) {
+        statusBadgeText = `Folga -${formatTotalHours1Dec(configuredDeltaHours)}h (${formatTotalHours1Dec(dailyWorkHours)}h úteis)`;
     } else if (isOvertime) {
-        statusBadgeText = isHoliday ? 'Feriado • H. Extra' : 'Hora Extra (+8h)';
+        statusBadgeText = isHoliday
+            ? `Feriado • +${formatTotalHours1Dec(configuredDeltaHours)}h (${formatTotalHours1Dec(dailyWorkHours)}h)`
+            : `H. Extra +${formatTotalHours1Dec(configuredDeltaHours)}h (${formatTotalHours1Dec(dailyWorkHours)}h)`;
     }
 
     return {
@@ -4538,6 +4685,9 @@ function evaluateTimelineDayStatus(dayMs, settings = null, memberName = null) {
         isWorking,
         isOvertime,
         isVacation,
+        isPartialOff,
+        dailyWorkHours,
+        configuredDeltaHours,
         isRestDay: !isWorking,
         memberEntry,
         statusBadgeText
@@ -4571,10 +4721,15 @@ function toggleTimelineDayWorkCheckbox(dateIsoStr, memberName = null) {
     const currentStatus = evaluateTimelineDayStatus(dayMs, st, defaultMember === 'all' ? null : defaultMember);
     const suggestedType = currentStatus.isWorking ? 'off' : 'overtime';
 
+    const defaultHours = suggestedType === 'overtime'
+        ? (currentStatus.isWeekend || currentStatus.isHoliday ? 8 : 2)
+        : 8;
+
     openScheduleExceptionAuthModal({
         mode: 'entry',
         member: defaultMember,
         type: suggestedType,
+        hours: currentStatus.memberEntry?.hours ?? defaultHours,
         startDate: dateIsoStr,
         endDate: dateIsoStr,
         note: currentStatus.memberEntry?.note || ''
@@ -4726,7 +4881,11 @@ function openWorkSettingsModal() {
                         ` : `
                             <div class="space-y-1.5 max-h-44 overflow-y-auto pr-1">
                                 ${memberEntries.map(entry => {
-                                    const meta = typeMeta[entry.type] || typeMeta.overtime;
+                                    const baseMeta = typeMeta[entry.type] || typeMeta.overtime;
+                                    const hrsLabel = entry.hours !== undefined && !isNaN(Number(entry.hours))
+                                        ? (entry.type === 'overtime' ? ` (+${formatTotalHours1Dec(entry.hours)}h/dia)` : (entry.type === 'off' ? ` (-${formatTotalHours1Dec(entry.hours)}h/dia)` : ` (${formatTotalHours1Dec(entry.hours)}h/dia)`))
+                                        : '';
+                                    const meta = { ...baseMeta, label: baseMeta.label.replace(/\s*\([^)]*\)/, '') + hrsLabel };
                                     const memberLabel = (!entry.member || entry.member === 'all') ? '👥 Toda a Equipe (Geral)' : `👤 ${entry.member}`;
                                     const periodLabel = entry.startDate === entry.endDate
                                         ? formatDisplayDate(entry.startDate)
@@ -4951,21 +5110,27 @@ async function distributeCardSubtaskHours(taskId) {
     const startMs = task.createdAt ? new Date(task.createdAt).setHours(0,0,0,0) : new Date().setHours(0,0,0,0);
     let endMs = startMs + DAY_MS;
     if (task.dueDate) {
-        const [y, m, d] = task.dueDate.split('-');
+        const effStr = getEffectiveTaskDeadlineDateStr(task.dueDate, getTaskDeadlineLeadDays(task));
+        const [y, m, d] = effStr.split('-');
         endMs = new Date(y, m - 1, d).setHours(0,0,0,0);
     }
 
     let workingDaysCount = 0;
+    let totalAvailableWindowHours = 0;
     let cursorMs = startMs;
     const maxLoopMs = Math.max(startMs, endMs);
+    const taskMember = (task.author || '').trim() || null;
     while (cursorMs <= maxLoopMs) {
-        const dayEval = evaluateTimelineDayStatus(cursorMs, st);
-        if (dayEval.isWorking) workingDaysCount++;
+        const dayEval = evaluateTimelineDayStatus(cursorMs, st, taskMember);
+        if (dayEval.isWorking && dayEval.dailyWorkHours > 0) {
+            workingDaysCount++;
+            totalAvailableWindowHours += Number(dayEval.dailyWorkHours) || DAILY_WORK_HOURS;
+        }
         cursorMs += DAY_MS;
     }
     workingDaysCount = Math.max(1, workingDaysCount);
 
-    const totalHours = workingDaysCount * DAILY_WORK_HOURS;
+    const totalHours = totalAvailableWindowHours > 0 ? roundHours1Dec(totalAvailableWindowHours, 0.5) : (workingDaysCount * DAILY_WORK_HOURS);
     const remainingHoursForPending = Math.max(pendingSubs.length * 0.1, totalHours - completedHoursSum);
     const suggestedPerSub = Math.max(0.1, Math.round((remainingHoursForPending / pendingSubs.length) * 10) / 10);
 
@@ -5249,8 +5414,14 @@ function allocateWorkingHoursOnTimeline(initialCursorMs, hoursToSchedule, settin
             continue;
         }
 
+        const dayCapacityHours = Math.max(0, Number(dayStatus.dailyWorkHours) || 0);
+        if (dayCapacityHours <= 0.0001) {
+            cursorMs = dayStartMs + DAY_MS;
+            continue;
+        }
+
         const usedFractionToday = Math.max(0, Math.min(1, (cursorMs - dayStartMs) / DAY_MS));
-        const availableHoursToday = Math.max(0, (1 - usedFractionToday) * DAILY_WORK_HOURS);
+        const availableHoursToday = Math.max(0, (1 - usedFractionToday) * dayCapacityHours);
 
         if (availableHoursToday <= 0.0001) {
             cursorMs = dayStartMs + DAY_MS;
@@ -5259,7 +5430,7 @@ function allocateWorkingHoursOnTimeline(initialCursorMs, hoursToSchedule, settin
 
         const consumeHours = Math.min(remainingHours, availableHoursToday);
         remainingHours -= consumeHours;
-        cursorMs += (consumeHours / DAILY_WORK_HOURS) * DAY_MS;
+        cursorMs += (consumeHours / dayCapacityHours) * DAY_MS;
 
         if (remainingHours > 0.0001) {
             cursorMs = dayStartMs + DAY_MS;
@@ -5299,6 +5470,7 @@ function buildMonthWeekBuckets(dayColumns) {
                 days: [],
                 daysCount: 0,
                 workingDaysCount: 0,
+                workingHoursSum: 0,
                 overtimeDaysCount: 0,
                 restDaysCount: 0,
                 hasToday: false
@@ -5308,7 +5480,10 @@ function buildMonthWeekBuckets(dayColumns) {
 
         currentBucket.days.push(col);
         currentBucket.daysCount++;
-        if (col.isWorking) currentBucket.workingDaysCount++;
+        if (col.isWorking) {
+            currentBucket.workingDaysCount++;
+            currentBucket.workingHoursSum = roundHours1Dec((currentBucket.workingHoursSum || 0) + (Number(col.dailyWorkHours) || DAILY_WORK_HOURS), 0.5);
+        }
         if (col.isOvertime) currentBucket.overtimeDaysCount++;
         if (col.isRestDay) currentBucket.restDaysCount++;
         if (col.isTodayCol) currentBucket.hasToday = true;
@@ -5432,12 +5607,17 @@ function renderGanttView(filteredTasks, containerEl) {
         rawItems.forEach(item => {
             const parentTaskObj = tasks.find(t => t.id === item.taskId);
             if (!macroGroupsMap.has(item.taskId)) {
+                const leadDays = getTaskDeadlineLeadDays(parentTaskObj);
+                const effectiveDeadlineStr = getEffectiveTaskDeadlineDateStr(item.dueDate, leadDays);
                 macroGroupsMap.set(item.taskId, {
                     taskId: item.taskId,
                     taskTitle: item.taskTitle,
                     priority: item.priority,
                     dueDate: item.dueDate,
-                    dueEndMs: getTaskDueDateEndMs(item.dueDate),
+                    deadlineLeadDays: leadDays,
+                    effectiveDeadlineStr,
+                    dueEndMs: getTaskDueDateEndMs(item.dueDate, leadDays),
+                    rawDueEndMs: getTaskDueDateEndMs(item.dueDate, 0),
                     createdAtMs: parentTaskObj?.createdAt || item.baseStartMs,
                     simultaneous: Boolean(parentTaskObj?.simultaneous),
                     baseStartMs: item.baseStartMs,
@@ -5562,14 +5742,21 @@ function renderGanttView(filteredTasks, containerEl) {
             if (macroBarStartMs < globalMinDayMs) globalMinDayMs = macroBarStartMs;
             if (macroBarEndMs > globalMaxDayMs) globalMaxDayMs = macroBarEndMs;
 
+            const progressPct = macroHours > 0
+                ? Math.min(100, Math.max(0, Math.round((macroDoneHours / macroHours) * 100)))
+                : (completedCount === macro.scheduledSubs.length && macro.scheduledSubs.length > 0 ? 100 : 0);
+
             return {
                 ...macro,
                 macroKey: `${user}::${macro.taskId}`,
                 startMs: macroBarStartMs,
                 endMs: macroBarEndMs,
                 subMaxEndMs,
+                progressPct,
                 createdShortLabel: formatCreatedAtDate(macro.createdAtMs, true),
                 createdFullLabel: formatCreatedAtDate(macro.createdAtMs, false),
+                effDeadlineShortLabel: macro.effectiveDeadlineStr ? formatDisplayDate(macro.effectiveDeadlineStr).slice(0, 5) : 'S/ prazo',
+                effDeadlineFullLabel: formatDisplayDate(macro.effectiveDeadlineStr),
                 dueShortLabel: macro.dueDate ? formatDisplayDate(macro.dueDate).slice(0, 5) : 'S/ prazo',
                 dueFullLabel: formatDisplayDate(macro.dueDate),
                 totalHours: formatTotalHours1Dec(macroHours),
@@ -5797,7 +5984,7 @@ function renderGanttView(filteredTasks, containerEl) {
 
                                             return `
                                                 <div onclick="toggleTimelineWeekWorkCheckbox('${b.datesCsv}')"
-                                                     title="${escapeHtml(b.titleLabel)} (${b.rangeLabel}) — ${b.workingDaysCount}d úteis ativos (${b.workingDaysCount * 8}h)${b.overtimeDaysCount > 0 ? ' • ' + b.overtimeDaysCount + 'd Hora Extra' : ''}. Clique para alternar a semana inteira."
+                                                     title="${escapeHtml(b.titleLabel)} (${b.rangeLabel}) — ${b.workingDaysCount}d úteis ativos (${formatTotalHours1Dec(b.workingHoursSum || (b.workingDaysCount * 8))}h)${b.overtimeDaysCount > 0 ? ' • ' + b.overtimeDaysCount + 'd Hora Extra' : ''}. Clique para alternar a semana inteira."
                                                      class="px-1 py-1 text-center border-r last:border-r-0 border-slate-300/80 dark:border-slate-600/70 cursor-pointer select-none transition flex flex-col items-center justify-center min-w-0 overflow-hidden ${weekBg}">
                                                     <div class="flex items-center justify-center gap-1 max-w-full">
                                                         <input type="checkbox" ${hasWeekWork ? 'checked' : ''} onclick="event.stopPropagation(); toggleTimelineWeekWorkCheckbox('${b.datesCsv}')" class="rounded ${allWeekWorking ? 'text-amber-500' : 'text-indigo-600'} w-3 h-3 cursor-pointer shrink-0">
@@ -5806,7 +5993,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                                         </span>
                                                     </div>
                                                     <div class="text-[8px] font-semibold text-slate-500 dark:text-slate-400 truncate max-w-full">
-                                                        ${b.rangeLabel} • <strong class="text-indigo-600 dark:text-indigo-400">${b.workingDaysCount * 8}h</strong>
+                                                        ${b.rangeLabel} • <strong class="text-indigo-600 dark:text-indigo-400">${formatTotalHours1Dec(b.workingHoursSum || (b.workingDaysCount * 8))}h</strong>
                                                     </div>
                                                 </div>
                                             `;
@@ -5866,7 +6053,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                                     <span class="text-[10px] font-extrabold truncate ${col.isTodayCol ? 'text-rose-600 dark:text-rose-400' : 'text-slate-700 dark:text-slate-200'}">${col.label}</span>
                                                 </div>
                                                 <div class="text-[8px] sm:text-[9px] font-semibold uppercase leading-tight truncate max-w-full ${statusColor}">
-                                                    ${col.weekDay} • ${col.isOvertime ? '⚡Ext' : (col.isRestDay ? (col.isHoliday ? '🏖️Fer' : 'Folga') : '8h')}
+                                                    ${col.weekDay} • ${col.isOvertime ? `⚡${formatTotalHours1Dec(col.dailyWorkHours)}h` : (col.isRestDay ? (col.isHoliday ? '🏖️Fer' : 'Folga') : `${formatTotalHours1Dec(col.dailyWorkHours)}h`)}
                                                 </div>
                                             </div>
                                         `;
@@ -5964,8 +6151,8 @@ function renderGanttView(filteredTasks, containerEl) {
                             <span class="text-amber-600 dark:text-amber-400"><i class="fa-regular fa-clock mr-1"></i>${userGroup.totalHours}h</span>
                             <span class="px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-300">${userGroup.totalDays}d (8h)</span>
                         </div>
-                        <div class="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
-                            <div class="bg-gradient-to-r from-indigo-500 to-emerald-500 h-full rounded-full" style="width: ${percentDone}%"></div>
+                        <div class="w-full bg-indigo-900 dark:bg-slate-900 h-2 rounded-full overflow-hidden border border-indigo-700/30">
+                            <div class="bg-gradient-to-r from-emerald-300 to-indigo-300 h-full rounded-full transition-all duration-300" style="width: ${percentDone}%"></div>
                         </div>
                         <div class="flex justify-between text-[9px] text-slate-400">
                             <span>Concluído: ${userGroup.doneHours}h</span>
@@ -5991,12 +6178,13 @@ function renderGanttView(filteredTasks, containerEl) {
                             } else if (uDay.memberEntry && uDay.memberEntry.type === 'off') {
                                 colBgClass = 'bg-rose-500/10 dark:bg-rose-500/15';
                                 if (totalTimelineDays <= 30) {
-                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-rose-600/80 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">🛋️Folga</span>`;
+                                    const offBadgeTxt = uDay.dailyWorkHours > 0 ? `🛋️-${formatTotalHours1Dec(uDay.configuredDeltaHours)}h (${formatTotalHours1Dec(uDay.dailyWorkHours)}h)` : '🛋️Folga (0h)';
+                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-rose-600/80 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">${offBadgeTxt}</span>`;
                                 }
                             } else if (uDay.isOvertime) {
                                 colBgClass = 'bg-amber-500/10 dark:bg-amber-500/15';
                                 if (uDay.memberEntry && uDay.memberEntry.member !== 'all' && totalTimelineDays <= 30) {
-                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-amber-500 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">⚡+8h</span>`;
+                                    badgeHtml = `<span class="mt-0.5 px-1 rounded bg-amber-500 text-white text-[7px] font-extrabold uppercase tracking-tighter truncate max-w-full">⚡+${formatTotalHours1Dec(uDay.configuredDeltaHours)}h (${formatTotalHours1Dec(uDay.dailyWorkHours)}h)</span>`;
                                 }
                             } else if (col.isTodayCol) {
                                 colBgClass = 'bg-rose-500/5 dark:bg-rose-500/10';
@@ -6029,7 +6217,9 @@ function renderGanttView(filteredTasks, containerEl) {
                 const isExpanded = rowObj.isExpanded;
 
                 if (macro.endMs <= viewStartMs || macro.startMs >= viewEndMs) {
-                    return;
+                    if (macro.allCompleted) {
+                        return;
+                    }
                 }
 
                 // A barra usa porcentagem exata da linha do tempo (0% a 100%) para se adaptar perfeitamente a qualquer tamanho de tela!
@@ -6040,42 +6230,67 @@ function renderGanttView(filteredTasks, containerEl) {
                 const rawWidthPct = ((clampedEndMs - clampedStartMs) / totalSpanMs) * 100;
                 const widthPct = Math.max(0.8, Math.min(100 - leftPct, rawWidthPct));
 
-                let macroBg = 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500';
-                if (macro.allCompleted) macroBg = 'bg-slate-300 dark:bg-slate-600 hover:bg-slate-400 text-slate-800 dark:text-slate-100 opacity-90';
-                else if (macro.priority === 'urgente') macroBg = 'bg-gradient-to-r from-rose-600 to-orange-600 hover:from-rose-500 hover:to-orange-500';
-                else if (macro.priority === 'alta') macroBg = 'bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 hover:to-orange-400';
+                // Cores Invertidas da Barra da Tarefa Principal: Fundo mais escuro (parte pendente) + Preenchimento mais claro (percentual executado 0% a 100%)
+                let macroLightBg = 'bg-indigo-900 dark:bg-indigo-950';
+                let macroDarkFillBg = 'bg-indigo-400 dark:bg-indigo-400';
+                let macroTextColor = 'text-white';
+
+                if (macro.allCompleted) {
+                    macroLightBg = 'bg-slate-600 dark:bg-slate-800';
+                    macroDarkFillBg = 'bg-slate-300 dark:bg-slate-500';
+                    macroTextColor = 'text-slate-900 dark:text-slate-100';
+                } else if (macro.priority === 'urgente') {
+                    macroLightBg = 'bg-rose-900 dark:bg-rose-950';
+                    macroDarkFillBg = 'bg-rose-400 dark:bg-rose-400';
+                } else if (macro.priority === 'alta') {
+                    macroLightBg = 'bg-amber-800 dark:bg-amber-950';
+                    macroDarkFillBg = 'bg-amber-400 dark:bg-amber-400';
+                }
 
                 const safeKey = escapeHtml(macro.macroKey).replace(/'/g, "\\'");
-                const isCompactBar = widthPct < 22;
+                const isCompactBar = widthPct < 24;
                 const isVeryNarrowBar = widthPct < 10;
 
                 html += `
                     <div data-gantt-macro-key="${safeKey}" onclick="toggleGanttMacroTask('${safeKey}', '${macro.taskId}')"
-                         class="absolute h-7 rounded-xl shadow-md ${macroBg} text-white flex items-center justify-between gap-1 px-2 text-[11px] font-bold cursor-pointer select-none transition-all hover:shadow-lg z-10 overflow-hidden border ${macro.exceedingSubCount > 0 ? 'border-rose-300 ring-2 ring-rose-500/70' : 'border-white/20'}"
+                         class="absolute h-7 rounded-xl shadow-md ${macroLightBg} ${macroTextColor} flex items-center justify-between gap-1 px-2 text-[11px] font-bold cursor-pointer select-none transition-all hover:shadow-lg z-10 overflow-hidden border ${macro.exceedingSubCount > 0 ? 'border-rose-300 ring-2 ring-rose-500/70' : 'border-white/25'}"
                          style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; top: ${topPx}px;"
-                         title="Tarefa Principal: ${escapeHtml(macro.taskTitle)} | Criada em: ${macro.createdFullLabel} | Vencimento: ${macro.dueFullLabel} | Carga das Subtarefas: ${macro.totalHours}h (${macro.durationDays}d de 8h)${macro.exceedingSubCount > 0 ? ' | ATENÇÃO: ' + macro.exceedingSubCount + ' subtarefa(s) excedem a data de vencimento!' : ''}">
+                         title="Tarefa Principal: ${escapeHtml(macro.taskTitle)} | Execução: ${macro.progressPct}% (${macro.doneHours}h/${macro.totalHours}h) | Criada em: ${macro.createdFullLabel} | Fim do Prazo (${macro.deadlineLeadDays}d antes): ${macro.effDeadlineFullLabel} | Vencimento Final: ${macro.dueFullLabel}${macro.exceedingSubCount > 0 ? ' | ATENÇÃO: ' + macro.exceedingSubCount + ' subtarefa(s) excedem o fim do prazo da tarefa!' : ''}">
                         
-                        <div class="flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+                        <!-- Camada de Preenchimento do Percentual de Execução (Cor Mais Escura avançando sobre a Cor Mais Clara) -->
+                        <div class="absolute inset-y-0 left-0 ${macroDarkFillBg} transition-all duration-300 pointer-events-none"
+                             style="width: ${macro.progressPct}%;"></div>
+
+                        <div class="relative z-10 flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
                             ${macro.hasSubtasks ? `
                                 <span class="w-4 h-4 rounded-md bg-black/25 flex items-center justify-center shrink-0">
                                     <i class="fa-solid ${isExpanded ? 'fa-chevron-down' : 'fa-chevron-right'} text-[9px]"></i>
                                 </span>
                             ` : `<i class="fa-solid fa-folder text-[10px] opacity-80 shrink-0"></i>`}
-                            <span class="truncate ${macro.allCompleted ? 'line-through opacity-85' : ''}">${escapeHtml(macro.taskTitle)}</span>
+                            <span class="truncate drop-shadow-sm ${macro.allCompleted ? 'line-through opacity-85' : ''}">${escapeHtml(macro.taskTitle)}</span>
+                            <!-- Percentual de Execução sempre visível na barra da tarefa -->
+                            <span class="px-1.5 py-0.2 rounded-md bg-black/35 text-white font-mono text-[9px] font-extrabold shrink-0 border border-white/15" title="Percentual executado da tarefa: ${macro.progressPct}% (${macro.doneHours}h concluídas de ${macro.totalHours}h)">
+                                ${macro.progressPct}%
+                            </span>
                         </div>
 
                         ${!isVeryNarrowBar ? `
-                            <div class="flex items-center gap-1 shrink-0">
+                            <div class="relative z-10 flex items-center gap-1 shrink-0">
                                 ${!isCompactBar ? `
-                                    <!-- Badge com Data de Criação e Data de Vencimento da Tarefa Principal -->
-                                    <span class="px-1.5 py-0.2 rounded bg-black/30 text-[9px] font-semibold flex items-center gap-1 whitespace-nowrap" title="Data de Criação (${macro.createdFullLabel}) até Data de Vencimento (${macro.dueFullLabel})">
+                                    <!-- Badge com Data de Criação, Fim do Prazo e Ajuste (- / Nd antes / +) -->
+                                    <span class="px-1.5 py-0.2 rounded bg-black/30 text-[9px] font-semibold flex items-center gap-1 whitespace-nowrap" title="Criada: ${macro.createdFullLabel} | Fim do Prazo: ${macro.effDeadlineFullLabel} (${macro.deadlineLeadDays}d antes do Vencimento ${macro.dueFullLabel})">
                                         <i class="fa-regular fa-calendar-plus text-[8px] text-indigo-200"></i>${macro.createdShortLabel}
                                         <i class="fa-solid fa-arrow-right text-[7px] opacity-75"></i>
-                                        <i class="fa-regular fa-calendar-check text-[8px] text-amber-200"></i>${macro.dueShortLabel}
+                                        <i class="fa-solid fa-flag-checkered text-[8px] text-emerald-300"></i>${macro.effDeadlineShortLabel}
                                     </span>
+                                    <div class="inline-flex items-center gap-0.5 bg-black/35 rounded px-1 py-0.2 border border-white/15" onclick="event.stopPropagation()" title="Ajustar Fim do Prazo: ${macro.deadlineLeadDays} dia(s) antes do vencimento (${macro.dueFullLabel}) — Mínimo: 0">
+                                        <button type="button" onclick="adjustTaskDeadlineLeadDays('${macro.taskId}', -1, null, event)" ${macro.deadlineLeadDays <= 0 ? 'disabled' : ''} class="w-3.5 h-3.5 rounded hover:bg-white/25 disabled:opacity-30 flex items-center justify-center font-extrabold text-[9px]" title="Reduzir dias antes do vencimento (mínimo 0)">-</button>
+                                        <span class="font-mono text-[8px] font-extrabold text-amber-200 px-0.5">-${macro.deadlineLeadDays}d</span>
+                                        <button type="button" onclick="adjustTaskDeadlineLeadDays('${macro.taskId}', 1, null, event)" class="w-3.5 h-3.5 rounded hover:bg-white/25 flex items-center justify-center font-extrabold text-[9px]" title="Aumentar dias antes do vencimento">+</button>
+                                    </div>
                                 ` : `
-                                    <span class="px-1 py-0.2 rounded bg-black/30 text-[8px] font-semibold whitespace-nowrap">
-                                        ${macro.dueShortLabel}
+                                    <span class="px-1 py-0.2 rounded bg-black/30 text-[8px] font-semibold whitespace-nowrap" title="Fim do Prazo: ${macro.effDeadlineFullLabel} (${macro.deadlineLeadDays}d antes de ${macro.dueFullLabel})">
+                                        ${macro.effDeadlineShortLabel} (-${macro.deadlineLeadDays}d)
                                     </span>
                                 `}
                                 ${macro.simultaneous && !isCompactBar ? `
@@ -6113,19 +6328,42 @@ function renderGanttView(filteredTasks, containerEl) {
                 `;
             } else {
                 const item = rowObj.subItem;
-                if (item.endMs <= viewStartMs || item.startMs >= viewEndMs) {
+                const isOffScreenLeft  = item.endMs <= viewStartMs;
+                const isOffScreenRight = item.startMs >= viewEndMs;
+                const isPartiallyClippedLeft = !isOffScreenLeft && item.startMs < viewStartMs;
+
+                // Se a subtarefa JÁ FOI FINALIZADA e está fora da janela visível, pode ocultá-la normalmente.
+                // Porém, se a subtarefa NÃO ESTIVER FINALIZADA (!item.completed) e estiver fora do período visível,
+                // posiciona-a como visível na borda do gráfico e indica com uma seta!
+                if ((isOffScreenLeft || isOffScreenRight) && item.completed) {
                     return;
                 }
 
-                // A barra da Subtarefa usa a porcentagem exata da escala diária/semanal,
-                // e exibe o RÓTULO COMPLETO AO LADO da barra quando a barra é curta (ex: 1h, 2h, 4h),
-                // garantindo 100% de leitura do nome, checkbox e botões (- / h / +) sem distorcer a duração!
-                const clampedStartMs = Math.max(viewStartMs, item.startMs);
-                const clampedEndMs = Math.min(viewEndMs, item.endMs);
+                let leftPct = 0;
+                let widthPct = 1.2;
+                let offScreenArrowDirection = null; // 'left' | 'right'
+                const itemStartFormatted = new Date(item.startMs).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+                const itemStartIso = formatMsToDateIso(item.startMs);
 
-                const leftPct = Math.max(0, Math.min(100, ((clampedStartMs - viewStartMs) / totalSpanMs) * 100));
-                const rawWidthPct = ((clampedEndMs - clampedStartMs) / totalSpanMs) * 100;
-                const widthPct = Math.max(1.2, Math.min(100 - leftPct, rawWidthPct));
+                if (isOffScreenLeft) {
+                    offScreenArrowDirection = 'left';
+                    leftPct = 0.2;
+                    widthPct = 1.4;
+                } else if (isOffScreenRight) {
+                    offScreenArrowDirection = 'right';
+                    widthPct = 1.4;
+                    leftPct = 98.4;
+                } else {
+                    if (isPartiallyClippedLeft && !item.completed) {
+                        offScreenArrowDirection = 'left';
+                    }
+                    const clampedStartMs = Math.max(viewStartMs, item.startMs);
+                    const clampedEndMs = Math.min(viewEndMs, item.endMs);
+
+                    leftPct = Math.max(0, Math.min(100, ((clampedStartMs - viewStartMs) / totalSpanMs) * 100));
+                    const rawWidthPct = ((clampedEndMs - clampedStartMs) / totalSpanMs) * 100;
+                    widthPct = Math.max(1.2, Math.min(100 - leftPct, rawWidthPct));
+                }
 
                 let subBarBg = 'bg-slate-700 dark:bg-slate-700 hover:bg-slate-600 border-l-4 border-l-indigo-400 text-white';
                 let extPillBorder = 'border-slate-300 dark:border-slate-700 bg-white/95 dark:bg-slate-800/95 text-slate-700 dark:text-slate-100';
@@ -6155,9 +6393,24 @@ function renderGanttView(filteredTasks, containerEl) {
                 const barThicknessClass = isGroupedDoubleBar
                     ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30'
                     : 'h-6 rounded-lg shadow-sm';
-                const canFitInsideBar = widthPct >= 24;
-                const placeLabelOnLeft = !canFitInsideBar && (leftPct + widthPct > 65);
-                const tooltipSub = `${isGroupedDoubleBar ? '🔀 SUBTAREFA AGRUPADA (DOBRO DA ESPESSURA) — ' : 'Subtarefa: '}${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
+                const canFitInsideBar = !isOffScreenLeft && !isOffScreenRight && widthPct >= 24;
+                const placeLabelOnLeft = !canFitInsideBar && (isOffScreenRight || (leftPct + widthPct > 65));
+                const offScreenNotice = isOffScreenLeft
+                    ? ` | ⬅️ FORA DA JANELA (Programada em ${itemStartFormatted} a ${item.endFormatted} — Não finalizada)`
+                    : (isOffScreenRight ? ` | ➡️ FORA DA JANELA (Programada para ${itemStartFormatted} a ${item.endFormatted} — Não finalizada)` : '');
+                const tooltipSub = `${isGroupedDoubleBar ? '🔀 SUBTAREFA AGRUPADA (DOBRO DA ESPESSURA) — ' : 'Subtarefa: '}${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${offScreenNotice}${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
+
+                const offScreenArrowBadgeHtml = offScreenArrowDirection === 'left'
+                    ? `<button type="button" onclick="event.stopPropagation(); jumpGanttTimelineToDate('${itemStartIso}')" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[9px] shadow-sm shrink-0 animate-pulse cursor-pointer" title="Subtarefa não finalizada programada em ${itemStartFormatted} (fora da visão à esquerda). Clique na seta para ir até a data!">
+                           <i class="fa-solid fa-arrow-left-long text-[10px]"></i>
+                           <span>${itemStartFormatted}</span>
+                       </button>`
+                    : (offScreenArrowDirection === 'right'
+                        ? `<button type="button" onclick="event.stopPropagation(); jumpGanttTimelineToDate('${itemStartIso}')" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[9px] shadow-sm shrink-0 animate-pulse cursor-pointer" title="Subtarefa não finalizada programada para ${itemStartFormatted} (fora da visão à direita). Clique na seta para ir até a data!">
+                               <span>${itemStartFormatted}</span>
+                               <i class="fa-solid fa-arrow-right-long text-[10px]"></i>
+                           </button>`
+                        : '');
 
                 if (canFitInsideBar) {
                     html += `
@@ -6176,6 +6429,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                         <i class="fa-solid fa-object-group text-[8px]"></i>
                                     </button>
                                 `}
+                                ${offScreenArrowBadgeHtml}
                                 <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="event.stopPropagation(); ${toggleDoneCall}" class="rounded text-emerald-500 w-3 h-3 cursor-pointer shrink-0" title="Marcar subtarefa como concluída">
                                 <span class="truncate font-semibold ${item.completed ? 'line-through opacity-80' : ''}">${escapeHtml(item.itemTitle)}</span>
                             </div>
@@ -6200,18 +6454,21 @@ function renderGanttView(filteredTasks, containerEl) {
                     `;
                 } else {
                     html += `
-                        <!-- Barra exata de duração da subtarefa na escala de tempo (Com o DOBRO DA ESPESSURA h-12 quando agrupada, ou h-6 quando simples) -->
-                        <div onclick="openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})"
-                             class="absolute ${isGroupedDoubleBar ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30' : 'h-6 rounded-md shadow-sm'} ${subBarBg} text-white flex items-center justify-center cursor-pointer transition-all z-10 hover:z-30"
-                             style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; min-width: ${isGroupedDoubleBar ? '14px' : '10px'}; top: ${topPx + 2}px;"
+                        <!-- Barra exata de duração da subtarefa na escala de tempo (Ou indicador com Seta quando fora da janela visível e não finalizada!) -->
+                        <div onclick="${offScreenArrowDirection ? `jumpGanttTimelineToDate('${itemStartIso}')` : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}"
+                             class="absolute ${isGroupedDoubleBar ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30' : 'h-6 rounded-md shadow-sm'} ${subBarBg} ${(isOffScreenLeft || isOffScreenRight) ? 'ring-2 ring-rose-500 animate-pulse' : ''} text-white flex items-center justify-center cursor-pointer transition-all z-10 hover:z-30"
+                             style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; min-width: ${(isOffScreenLeft || isOffScreenRight) ? '22px' : (isGroupedDoubleBar ? '14px' : '10px')}; top: ${topPx + 2}px;"
                              title="${escapeHtml(tooltipSub)}">
-                            ${widthPct >= 3.2 ? `<span class="font-mono ${isGroupedDoubleBar ? 'text-[10px]' : 'text-[8px]'} font-extrabold leading-none truncate px-0.5">${item.hours}h</span>` : ''}
+                            ${(isOffScreenLeft || isOffScreenRight)
+                                ? `<i class="fa-solid ${isOffScreenLeft ? 'fa-angles-left' : 'fa-angles-right'} text-[10px] text-white drop-shadow"></i>`
+                                : (widthPct >= 3.2 ? `<span class="font-mono ${isGroupedDoubleBar ? 'text-[10px]' : 'text-[8px]'} font-extrabold leading-none truncate px-0.5">${item.hours}h</span>` : '')}
                         </div>
 
-                        <!-- Rótulo externo completo e interativo da Subtarefa (Centralizado verticalmente com a barra de dobro de espessura!) -->
-                        <div class="absolute ${isGroupedDoubleBar ? 'h-9' : 'h-6'} flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[420px] sm:max-w-[560px] ${extPillBorder}"
-                             style="${placeLabelOnLeft ? `right: ${(100 - leftPct + 0.5).toFixed(3)}%;` : `left: ${(leftPct + widthPct + 0.5).toFixed(3)}%;`} top: ${topPx + (isGroupedDoubleBar ? 8 : 2)}px;"
+                        <!-- Rótulo externo completo e interativo da Subtarefa (Posicionado como visível e com Seta indicadora quando fora do período!) -->
+                        <div class="absolute ${isGroupedDoubleBar ? 'h-9' : 'h-6'} flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[460px] sm:max-w-[620px] ${extPillBorder}"
+                             style="${placeLabelOnLeft ? `right: ${(100 - leftPct + 0.6).toFixed(3)}%;` : `left: ${(leftPct + widthPct + 0.6).toFixed(3)}%;`} top: ${topPx + (isGroupedDoubleBar ? 8 : 2)}px;"
                              title="${escapeHtml(tooltipSub)}">
+                            ${offScreenArrowDirection === 'left' ? offScreenArrowBadgeHtml : ''}
                             
                             ${item.subIdx >= 0 ? `
                                 <button type="button" onclick="event.stopPropagation(); ${toggleGroupSelectCall}" class="inline-flex items-center gap-1 px-1.5 py-0.2 rounded border text-[9px] font-extrabold transition shrink-0 cursor-pointer ${
@@ -6265,6 +6522,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                 <span class="font-mono text-[9px] font-extrabold px-0.5 text-amber-600 dark:text-amber-400">${item.hours}h</span>
                                 <button type="button" onclick="${adjustPlusCall}" class="w-3.5 h-3.5 rounded hover:bg-indigo-500 hover:text-white flex items-center justify-center font-extrabold text-[9px] transition" title="Aumentar 0.5h">+</button>
                             </div>
+                            ${offScreenArrowDirection === 'right' ? offScreenArrowBadgeHtml : ''}
                         </div>
                     `;
                 }
@@ -6711,17 +6969,34 @@ function openScheduleExceptionAuthModal(opts = {}) {
                 }).join('');
         }
 
+        const chosenType = opts.type || 'overtime';
         const typeSel = document.getElementById('scheduleAuthTypeSelect');
-        if (typeSel) typeSel.value = opts.type || 'overtime';
+        if (typeSel) typeSel.value = chosenType;
 
         const todayIso = getLocalDateStr(0);
+        const startDateVal = opts.startDate || todayIso;
         const startInp = document.getElementById('scheduleAuthStartDateInput');
         const endInp = document.getElementById('scheduleAuthEndDateInput');
-        if (startInp) startInp.value = opts.startDate || todayIso;
-        if (endInp) endInp.value = opts.endDate || opts.startDate || todayIso;
+        if (startInp) startInp.value = startDateVal;
+        if (endInp) endInp.value = opts.endDate || startDateVal;
+
+        const hoursInp = document.getElementById('scheduleAuthHoursInput');
+        if (hoursInp) {
+            if (opts.hours !== undefined && !isNaN(Number(opts.hours))) {
+                hoursInp.value = Math.max(0.5, Number(opts.hours));
+            } else {
+                const [y, m, d] = startDateVal.split('-').map(Number);
+                const dayMs = new Date(y, m - 1, d).setHours(0, 0, 0, 0);
+                const dOfWeek = new Date(dayMs).getDay();
+                const isWkndOrHol = (dOfWeek === 0 || dOfWeek === 6) || Boolean(getHolidayNameForDate(startDateVal));
+                hoursInp.value = chosenType === 'overtime' ? (isWkndOrHol ? 8 : 2) : 8;
+            }
+        }
 
         const noteInp = document.getElementById('scheduleAuthNoteInput');
         if (noteInp) noteInp.value = opts.note || '';
+
+        handleScheduleAuthTypeChange(chosenType, false);
     }
 
     modal.classList.remove('hidden');
@@ -6734,15 +7009,87 @@ function closeScheduleExceptionAuthModal() {
     renderAll();
 }
 
-function handleScheduleAuthTypeChange(typeVal) {
+function stepScheduleAuthHours(delta) {
+    const inp = document.getElementById('scheduleAuthHoursInput');
+    if (!inp) return;
+    const cur = parseFloat(inp.value) || 2;
+    inp.value = Math.max(0.5, Math.min(16, Math.round((cur + delta) * 10) / 10));
+    updateScheduleAuthHoursSummary();
+}
+
+function setScheduleAuthHoursValue(val) {
+    const inp = document.getElementById('scheduleAuthHoursInput');
+    if (!inp) return;
+    inp.value = Math.max(0.5, Math.min(16, Number(val) || 2));
+    updateScheduleAuthHoursSummary();
+}
+
+function updateScheduleAuthHoursSummary() {
+    const typeVal = document.getElementById('scheduleAuthTypeSelect')?.value || 'overtime';
+    const hoursVal = Math.max(0.5, parseFloat(document.getElementById('scheduleAuthHoursInput')?.value) || 2);
+    const startDateVal = document.getElementById('scheduleAuthStartDateInput')?.value || getLocalDateStr(0);
+    const badgeEl = document.getElementById('scheduleAuthHoursResultBadge');
+    if (!badgeEl) return;
+
+    const [y, m, d] = startDateVal.split('-').map(Number);
+    const dOfWeek = (y && m && d) ? new Date(y, m - 1, d).getDay() : 1;
+    const isWkndOrHol = (dOfWeek === 0 || dOfWeek === 6) || Boolean(getHolidayNameForDate(startDateVal));
+    const baseHours = isWkndOrHol ? 0 : DAILY_WORK_HOURS;
+
+    if (typeVal === 'overtime') {
+        const resultingHours = roundHours1Dec(baseHours + hoursVal, 0.5);
+        badgeEl.textContent = `Dia ficará com ${formatTotalHours1Dec(resultingHours)}h úteis (${baseHours}h + ${formatTotalHours1Dec(hoursVal)}h extra)`;
+    } else if (typeVal === 'off') {
+        const baseForOff = baseHours > 0 ? baseHours : DAILY_WORK_HOURS;
+        const resultingHours = Math.max(0, roundHours1Dec(baseForOff - hoursVal, 0.5));
+        badgeEl.textContent = resultingHours > 0
+            ? `Folga parcial (-${formatTotalHours1Dec(hoursVal)}h) → Restam ${formatTotalHours1Dec(resultingHours)}h úteis no dia`
+            : `Folga integral (-${formatTotalHours1Dec(hoursVal)}h) → 0h úteis no dia`;
+    } else if (typeVal === 'work') {
+        badgeEl.textContent = `Jornada útil de ${formatTotalHours1Dec(hoursVal)}h/dia no cálculo`;
+    }
+}
+
+function handleScheduleAuthTypeChange(typeVal, resetDefaultHours = true) {
     const noteInp = document.getElementById('scheduleAuthNoteInput');
+    const hoursBox = document.getElementById('scheduleAuthHoursBox');
+    const hoursLbl = document.getElementById('scheduleAuthHoursLabel');
+    const hoursInp = document.getElementById('scheduleAuthHoursInput');
+    const startDateVal = document.getElementById('scheduleAuthStartDateInput')?.value || getLocalDateStr(0);
+
+    if (typeVal === 'overtime' || typeVal === 'off' || typeVal === 'work') {
+        hoursBox?.classList.remove('hidden');
+        if (hoursLbl) {
+            if (typeVal === 'overtime') {
+                hoursLbl.innerHTML = `<i class="fa-solid fa-bolt text-amber-500 mr-1"></i> Quanto tempo de Hora Extra (horas por dia)? *`;
+            } else if (typeVal === 'off') {
+                hoursLbl.innerHTML = `<i class="fa-solid fa-mug-hot text-rose-500 mr-1"></i> Quanto tempo de Folga / Ausência (8h = dia todo)? *`;
+            } else {
+                hoursLbl.innerHTML = `<i class="fa-solid fa-briefcase text-emerald-500 mr-1"></i> Quantas horas úteis de trabalho no dia? *`;
+            }
+        }
+        if (resetDefaultHours && hoursInp) {
+            const [y, m, d] = startDateVal.split('-').map(Number);
+            const dOfWeek = (y && m && d) ? new Date(y, m - 1, d).getDay() : 1;
+            const isWkndOrHol = (dOfWeek === 0 || dOfWeek === 6) || Boolean(getHolidayNameForDate(startDateVal));
+            if (typeVal === 'overtime') {
+                hoursInp.value = isWkndOrHol ? 8 : 2;
+            } else {
+                hoursInp.value = 8;
+            }
+        }
+        updateScheduleAuthHoursSummary();
+    } else {
+        hoursBox?.classList.add('hidden');
+    }
+
     if (!noteInp) return;
     if (typeVal === 'vacation' && !noteInp.value) {
         noteInp.placeholder = 'Ex: Período de Férias do membro...';
     } else if (typeVal === 'overtime' && !noteInp.value) {
-        noteInp.placeholder = 'Ex: Hora extra autorizada (+8h)...';
+        noteInp.placeholder = 'Ex: Hora extra autorizada...';
     } else if (typeVal === 'off' && !noteInp.value) {
-        noteInp.placeholder = 'Ex: Folga compensatória / dispensa...';
+        noteInp.placeholder = 'Ex: Folga compensatória / saída antecipada...';
     }
 }
 
@@ -6813,10 +7160,16 @@ async function handleConfirmScheduleExceptionWithPassword(event) {
         return;
     }
 
+    const rawHoursInput = parseFloat(document.getElementById('scheduleAuthHoursInput')?.value);
+    const entryHours = (typeVal === 'vacation')
+        ? 0
+        : (isNaN(rawHoursInput) || rawHoursInput <= 0 ? DAILY_WORK_HOURS : Math.max(0.5, Math.round(rawHoursInput * 10) / 10));
+
     st.memberEntries.push({
         id: 'sch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
         member: memberVal,
         type: typeVal,
+        hours: entryHours,
         startDate,
         endDate,
         note,
@@ -6825,7 +7178,7 @@ async function handleConfirmScheduleExceptionWithPassword(event) {
     });
 
     if (memberVal === 'all' && startDate === endDate) {
-        st.dateOverrides[startDate] = typeVal;
+        st.dateOverrides[startDate] = { type: typeVal, hours: entryHours };
     }
 
     saveWorkSettings(st);
@@ -6834,13 +7187,13 @@ async function handleConfirmScheduleExceptionWithPassword(event) {
     renderAll();
 
     const typeNames = {
-        overtime: 'Hora Extra (+8h)',
-        off: 'Folga (0h)',
-        vacation: 'Período de Férias',
-        work: 'Dia Útil (8h)'
+        overtime: `Hora Extra (+${formatTotalHours1Dec(entryHours)}h/dia)`,
+        off: `Folga (-${formatTotalHours1Dec(entryHours)}h/dia)`,
+        vacation: 'Período de Férias (0h)',
+        work: `Dia Útil (${formatTotalHours1Dec(entryHours)}h/dia)`
     };
     const targetName = memberVal === 'all' ? 'Toda a Equipe' : memberVal;
-    showToast(`${typeNames[typeVal] || typeVal} atribuída para ${targetName} (${formatDisplayDate(startDate)} a ${formatDisplayDate(endDate)})!`, 'success');
+    showToast(`${typeNames[typeVal] || typeVal} atribuída para ${targetName} (${formatDisplayDate(startDate)} a ${formatDisplayDate(endDate)}) e aplicada ao cálculo do cronograma!`, 'success');
 }
 
 // =========================================================================

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TaskFlow Pro Engenharia — Controle de Pedidos e Tarefas (100% Firebase Cloud)</title>
     <!-- Tailwind CSS CDN -->
-    <script type="text/javascript" src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=GvLr29Pmig2WHekxkY0T6D-4XkMJJ4e8YMdaUi-qPldIQuQ67kfjizobknKNUbZJRBTpXvMooMKy8gCRbU-_weH3X3qRxlaS89YsL3LUkhZLLKKg6_kCYQkb00-_oAs3t6pca-WHrY3WfUahRW3TlCaLVANurYqOcD0__g0u9bB8HWUXiwGfqx2zmh6DtTuHdvjQwXnN75zwtfqsXaOPju-GNNODFYoJPM4klpaCg9O1v7qOKq5608-MdeGIWJrYhsVQc5Zjwv-AovK-oz72r_V9w8Z2-lJPxv8ZfRcutWm47AG4lGyEaNQeJ2_TcBGb" charset="UTF-8"></script><script src="https://cdn.tailwindcss.com"></script>
+    <script type="text/javascript" src="https://gc.kes.v2.scr.kaspersky-labs.com/7EA5E9BB-55E1-4C31-9C21-4943DDFED2E4/main.js?attr=iTi4XV5c1R8-a-gVW_nHyqMLDpPBdaNHbSnREx-bOQmHlciEK99bFzkN5kgorq7wJvPd2YFApUbPjQvr5tryn4Fq2tHPc_v3TEj4pjtoN5vKMf9hgzho4GQI6LYcz8Ho2sEJnXWxCgJx0PvKZerNoHf9BQD5iDd2OZR6MGI1Robd_Jf5zxAFWHA0haQurs3Adnacqmg5sMqNCaJgrvGiFvc0WU88IAR4MM_gX4m7yPjkEkSxcRCORYah4L1QRwicJouCuiXS2RFBuyenIF7HgM3hizK1W4I36Gm9QRPDaxU-_fXGqD_qKxZlGUUW1GYu" charset="UTF-8"></script><script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <!-- Google Fonts: Inter -->
@@ -341,9 +341,9 @@
                     </div>
                 </div>
 
-                <!-- Linha 2 Compacta: Prioridade, Vencimento, Status e Execução Simultânea numa única linha -->
+                <!-- Linha 2 Compacta: Prioridade, Vencimento, Fim do Prazo (dias antes), Status e Execução Simultânea -->
                 <div class="grid grid-cols-2 sm:grid-cols-12 gap-2 items-end">
-                    <div class="sm:col-span-3">
+                    <div class="sm:col-span-2">
                         <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-0.5">Prioridade *</label>
                         <select id="taskPriorityInput" class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs font-semibold">
                             <option value="baixa">🌱 Baixa</option>
@@ -354,22 +354,34 @@
                     </div>
                     <div class="sm:col-span-3">
                         <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-0.5">Vencimento *</label>
-                        <input type="date" id="taskDueDateInput" required class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs font-semibold">
+                        <input type="date" id="taskDueDateInput" onchange="renderModalSubtasks()" required class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs font-semibold">
                     </div>
-                    <div class="sm:col-span-3">
+                    <div class="sm:col-span-3" title="Define o fim do prazo da tarefa como N dias antes do vencimento (padrão 5 dias, mínimo 0)">
+                        <label class="block text-[10px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-0.5 flex items-center justify-between">
+                            <span>Fim Prazo (Antec.)</span>
+                            <span id="modalEffectiveDeadlineLabel" class="font-mono text-[9px] text-emerald-600 dark:text-emerald-400"></span>
+                        </label>
+                        <div class="flex items-center rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-1 py-0.5 gap-1">
+                            <button type="button" onclick="stepModalLeadDays(-1)" class="w-6 h-6 rounded bg-slate-200/80 dark:bg-slate-700 hover:bg-indigo-600 hover:text-white text-slate-700 dark:text-slate-200 font-extrabold text-xs flex items-center justify-center transition" title="Diminuir dias antes do vencimento (mínimo 0)">-</button>
+                            <input type="number" id="taskDeadlineLeadDaysInput" min="0" step="1" value="5" oninput="handleModalLeadDaysInput(this.value)" class="w-full bg-transparent text-center font-mono font-extrabold text-xs text-indigo-600 dark:text-indigo-300 focus:outline-none">
+                            <span class="text-[10px] font-bold text-slate-400 shrink-0">d antes</span>
+                            <button type="button" onclick="stepModalLeadDays(1)" class="w-6 h-6 rounded bg-slate-200/80 dark:bg-slate-700 hover:bg-indigo-600 hover:text-white text-slate-700 dark:text-slate-200 font-extrabold text-xs flex items-center justify-center transition" title="Aumentar dias antes do vencimento">+</button>
+                        </div>
+                    </div>
+                    <div class="sm:col-span-2">
                         <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-0.5">Status *</label>
                         <select id="taskStatusInput" onchange="handleModalTaskStatusChange(this.value)" class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-indigo-500 text-xs font-semibold">
                             <option value="todo">📋 A Fazer</option>
-                            <option value="in_progress">⏳ Em Andamento</option>
+                            <option value="in_progress">⏳ Em And.</option>
                             <option value="waiting">⏸️ Aguardando</option>
                             <option value="done">✅ Concluído</option>
                         </select>
                     </div>
-                    <div class="col-span-2 sm:col-span-3">
-                        <label class="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/25 cursor-pointer select-none text-[11px] font-bold text-cyan-800 dark:text-cyan-300 hover:bg-cyan-500/15 transition" title="Executar Simultaneamente: Distribuir/Intercalar subtarefas com outra tarefa paralela na Timeline">
+                    <div class="col-span-2 sm:col-span-2">
+                        <label class="flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/25 cursor-pointer select-none text-[11px] font-bold text-cyan-800 dark:text-cyan-300 hover:bg-cyan-500/15 transition" title="Executar Simultaneamente: Distribuir/Intercalar subtarefas com outra tarefa paralela na Timeline">
                             <input type="checkbox" id="taskSimultaneousInput" class="rounded text-cyan-600 focus:ring-cyan-500 w-3.5 h-3.5 cursor-pointer shrink-0">
                             <i class="fa-solid fa-code-branch text-cyan-500 text-[10px]"></i>
-                            <span class="truncate">Simultânea</span>
+                            <span class="truncate">Simult.</span>
                         </label>
                     </div>
                 </div>
@@ -1095,12 +1107,12 @@
 
                     <!-- Linha Única Combinada: Título + Descrição + Prioridade + Prazo + Responsável -->
                     <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end">
-                        <div class="sm:col-span-4">
+                        <div class="sm:col-span-3">
                             <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 mb-0.5">Título da Tarefa (Pedido) *</label>
                             <input type="text" id="importOrderTitleInput" autocomplete="off" class="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-bold focus:outline-none focus:border-indigo-500">
                         </div>
-                        <div class="sm:col-span-3">
-                            <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 mb-0.5">Descrição / Observações</label>
+                        <div class="sm:col-span-2">
+                            <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 mb-0.5">Descrição / Obs.</label>
                             <input type="text" id="importOrderDescInput" autocomplete="off" placeholder="Opcional..." class="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs focus:outline-none focus:border-indigo-500">
                         </div>
                         <div class="sm:col-span-1">
@@ -1113,8 +1125,17 @@
                             </select>
                         </div>
                         <div class="sm:col-span-2">
-                            <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 mb-0.5">Prazo Entrega</label>
-                            <input type="date" id="importDefaultDueDate" class="w-full px-2 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold focus:outline-none focus:border-indigo-500">
+                            <label class="block text-[10px] font-bold uppercase text-slate-500 dark:text-slate-400 mb-0.5">Vencimento</label>
+                            <input type="date" id="importDefaultDueDate" onchange="distributeExcelPreviewHours(true); renderExcelPreviewTable();" class="w-full px-2 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs font-semibold focus:outline-none focus:border-indigo-500">
+                        </div>
+                        <div class="sm:col-span-2" title="Define o fim do prazo da tarefa como N dias antes do vencimento (padrão 5 dias, mínimo 0)">
+                            <label class="block text-[10px] font-bold uppercase text-indigo-600 dark:text-indigo-400 mb-0.5">Fim Prazo (Antec.)</label>
+                            <div class="flex items-center rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 px-1 py-0.5 gap-1">
+                                <button type="button" onclick="stepExcelImportLeadDays(-1)" class="w-5 h-5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-700 dark:text-slate-200 font-extrabold text-xs flex items-center justify-center transition">-</button>
+                                <input type="number" id="importDeadlineLeadDaysInput" min="0" step="1" value="5" oninput="handleExcelImportLeadDaysInput(this.value)" class="w-full bg-transparent text-center font-mono font-extrabold text-xs text-indigo-600 dark:text-indigo-300 focus:outline-none">
+                                <span class="text-[9px] font-bold text-slate-400 shrink-0">d</span>
+                                <button type="button" onclick="stepExcelImportLeadDays(1)" class="w-5 h-5 rounded bg-slate-100 dark:bg-slate-800 hover:bg-indigo-600 hover:text-white text-slate-700 dark:text-slate-200 font-extrabold text-xs flex items-center justify-center transition">+</button>
+                            </div>
                         </div>
                         <div class="sm:col-span-2">
                             <div class="flex items-center justify-between mb-0.5">
@@ -1430,12 +1451,39 @@
                                 <i class="fa-solid fa-calendar-check text-amber-500 mr-1"></i> Tipo de Lançamento *
                             </label>
                             <select id="scheduleAuthTypeSelect" onchange="handleScheduleAuthTypeChange(this.value)" class="w-full px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer">
-                                <option value="overtime">⚡ Hora Extra (+8h no dia)</option>
-                                <option value="off">🛋️ Folga / Ausência (0h)</option>
+                                <option value="overtime">⚡ Hora Extra (+Horas no dia)</option>
+                                <option value="off">🛋️ Folga Integral ou Parcial (-Horas)</option>
                                 <option value="vacation">🏖️ Período de Férias (0h)</option>
                                 <option value="work">💼 Dia Útil Normal (8h)</option>
                                 <option value="default">🔄 Restaurar Padrão da Data</option>
                             </select>
+                        </div>
+                    </div>
+
+                    <!-- Campo para perguntar Quanto Tempo (em horas) de Hora Extra ou Folga e considerar no cálculo -->
+                    <div id="scheduleAuthHoursBox" class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-2">
+                        <div class="flex flex-wrap items-center justify-between gap-1">
+                            <label id="scheduleAuthHoursLabel" class="block text-[10px] font-extrabold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                                <i class="fa-regular fa-clock mr-1"></i> Quanto tempo de Hora Extra (horas por dia)? *
+                            </label>
+                            <span id="scheduleAuthHoursResultBadge" class="px-2 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-amber-500/30 font-mono text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400">
+                                Capacidade considerada no cálculo
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="stepScheduleAuthHours(-0.5)" class="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-amber-500/35 hover:bg-amber-500 hover:text-white font-extrabold text-xs text-amber-700 dark:text-amber-300 transition flex items-center justify-center">-0.5</button>
+                            <input type="number" id="scheduleAuthHoursInput" min="0.5" max="16" step="0.5" value="2" oninput="updateScheduleAuthHoursSummary()" class="flex-1 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-amber-500/40 text-center font-mono font-extrabold text-sm text-amber-700 dark:text-amber-300 focus:outline-none focus:border-amber-500">
+                            <span class="font-bold text-amber-700 dark:text-amber-300 text-xs shrink-0">h / dia</span>
+                            <button type="button" onclick="stepScheduleAuthHours(0.5)" class="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-amber-500/35 hover:bg-amber-500 hover:text-white font-extrabold text-xs text-amber-700 dark:text-amber-300 transition flex items-center justify-center">+0.5</button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1 pt-0.5">
+                            <span class="text-[9px] font-bold uppercase text-slate-400 mr-1">Rápido:</span>
+                            <button type="button" onclick="setScheduleAuthHoursValue(1)" class="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 hover:bg-amber-500 hover:text-white border border-slate-200 dark:border-slate-700 font-mono font-bold text-[10px] transition">1h</button>
+                            <button type="button" onclick="setScheduleAuthHoursValue(2)" class="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 hover:bg-amber-500 hover:text-white border border-slate-200 dark:border-slate-700 font-mono font-bold text-[10px] transition">2h</button>
+                            <button type="button" onclick="setScheduleAuthHoursValue(3)" class="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 hover:bg-amber-500 hover:text-white border border-slate-200 dark:border-slate-700 font-mono font-bold text-[10px] transition">3h</button>
+                            <button type="button" onclick="setScheduleAuthHoursValue(4)" class="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 hover:bg-amber-500 hover:text-white border border-slate-200 dark:border-slate-700 font-mono font-bold text-[10px] transition">4h (Meio período)</button>
+                            <button type="button" onclick="setScheduleAuthHoursValue(6)" class="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 hover:bg-amber-500 hover:text-white border border-slate-200 dark:border-slate-700 font-mono font-bold text-[10px] transition">6h</button>
+                            <button type="button" onclick="setScheduleAuthHoursValue(8)" class="px-2 py-0.5 rounded bg-white/80 dark:bg-slate-800 hover:bg-amber-500 hover:text-white border border-slate-200 dark:border-slate-700 font-mono font-bold text-[10px] transition">8h (Dia inteiro)</button>
                         </div>
                     </div>
 
