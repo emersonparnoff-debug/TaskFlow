@@ -664,7 +664,8 @@ function getFilteredTasks() {
     const searchVal = (document.getElementById('searchInput')?.value || '').toLowerCase().trim();
     const memberVal = (document.getElementById('memberFilter')?.value || 'all').toLowerCase().trim();
     const priorityVal = document.getElementById('priorityFilter')?.value || 'all';
-    const sortVal = document.getElementById('sortBySelect')?.value || window._currentSortMode || 'dueDate';
+    const hasSavedManualOrder = Array.isArray(tasks) && tasks.some(t => typeof t.manualOrder === 'number');
+    const sortVal = document.getElementById('sortBySelect')?.value || window._currentSortMode || (hasSavedManualOrder ? 'manual' : 'dueDate');
     const showCompleted = document.getElementById('showCompletedToggle')?.checked ?? true;
 
     return tasks.filter(t => {
@@ -872,103 +873,130 @@ function evaluateTaskSubtasksDeadlineInfo(taskOrObj) {
 
     const settings = getWorkSettings();
     const subs = Array.isArray(taskOrObj.subtasks) ? taskOrObj.subtasks : [];
+    if (subs.length === 0) return result;
+
+    const todayZeroMs = new Date().setHours(0, 0, 0, 0);
+    const nowShiftCursorMs = getCurrentWorkingShiftCursorMs();
     const baseStartMs = taskOrObj.createdAt
         ? new Date(taskOrObj.createdAt).setHours(0, 0, 0, 0)
-        : new Date().setHours(0, 0, 0, 0);
+        : todayZeroMs;
 
-    // Se a tarefa está marcada como simultânea junto com outras tarefas ativas do mesmo membro,
-    // ou isolada, calcula a projeção acumulando as horas úteis
-    let cursorMs = baseStartMs;
-
-    // Verifica se há outras tarefas simultâneas ativas para considerar na projeção caso taskOrObj.id exista
-    const otherSimTasks = (taskOrObj.id && taskOrObj.simultaneous)
-        ? tasks.filter(t => t.id !== taskOrObj.id && t.simultaneous && t.status !== 'done' && doesTaskAppearInRoom(t, currentWorkspace))
-        : [];
-
-    if (otherSimTasks.length > 0 && subs.length > 0) {
-        // Simula intercalação (Round-Robin) entre as tarefas simultâneas
-        const allSimTasks = [taskOrObj, ...otherSimTasks];
-        const queues = allSimTasks.map(t => {
-            const tSubs = ensureSubtaskStructure(t.subtasks || []);
-            const ordered = tSubs
-                .map((s, i) => ({ s, i }))
-                .sort((a, b) => {
-                    const tierA = getSubtaskQueuePriorityTier(a.s);
-                    const tierB = getSubtaskQueuePriorityTier(b.s);
-                    if (tierA !== tierB) return tierA - tierB;
-                    return a.i - b.i;
-                });
-            return { taskId: t.id, items: ordered, ptr: 0 };
-        });
-
-        let hasMore = true;
-        while (hasMore) {
-            hasMore = false;
-            for (const q of queues) {
-                if (q.ptr < q.items.length) {
-                    hasMore = true;
-                    const { s, i } = q.items[q.ptr++];
-                    const h = Math.max(0.1, Number(s.hours) || 2);
-                    const subMember = (s.assignee || t.author || '').trim() || null;
-                    const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings, subMember);
-                    cursorMs = alloc.nextCursorMs;
-
-                    if (q.taskId === taskOrObj.id) {
-                        const exceeds = Boolean(dueEndMs && alloc.endMs > dueEndMs && !s.completed);
-                        const excessHours = (dueEndMs && alloc.endMs > dueEndMs)
-                            ? Math.max(0.1, Math.round(((alloc.endMs - dueEndMs) / (1000 * 60 * 60 * 24)) * DAILY_WORK_HOURS * 10) / 10)
-                            : 0;
-                        if (exceeds) {
-                            result.taskExceedsDeadline = true;
-                            result.exceedingPendingCount++;
-                        }
-                        result.subtaskMap[i] = {
-                            startMs: alloc.startMs,
-                            endMs: alloc.endMs,
-                            exceedsDeadline: exceeds,
-                            excessHours,
-                            endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
-                        };
-                    }
-                }
-            }
+    // 1. Subtarefas já concluídas permanecem a partir da data de criação da tarefa
+    let doneCursorMs = baseStartMs;
+    subs.forEach((s, idx) => {
+        if (s.completed) {
+            const h = Math.max(0.1, Number(s.hours) || 2);
+            const subMember = (s.assignee || taskOrObj.author || '').trim() || null;
+            const alloc = allocateWorkingHoursOnTimeline(doneCursorMs, h, settings, subMember);
+            doneCursorMs = alloc.nextCursorMs;
+            result.subtaskMap[idx] = {
+                startMs: alloc.startMs,
+                endMs: alloc.endMs,
+                exceedsDeadline: false,
+                excessHours: 0,
+                endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+            };
         }
-        return result;
+    });
+
+    // 2. Subtarefas NÃO EXECUTADAS (!s.completed):
+    //    - São posicionadas da DATA DE HOJE (todayZeroMs) em diante!
+    //    - São organizadas levando em consideração as subtarefas não executadas de TODAS as tarefas
+    //      atribuídas à mesma pessoa (acumulando na fila daquela pessoa)!
+    const allActiveTasks = [];
+    const visibleRoomTasks = (typeof getFilteredTasks === 'function')
+        ? getFilteredTasks()
+        : tasks.filter(t => !t.archived && t.status !== 'done');
+
+    let foundTargetInList = false;
+    visibleRoomTasks.forEach(t => {
+        if (taskOrObj.id && t.id === taskOrObj.id) {
+            allActiveTasks.push(taskOrObj);
+            foundTargetInList = true;
+        } else if (!t.archived && t.status !== 'done') {
+            allActiveTasks.push(t);
+        }
+    });
+    if (!foundTargetInList) {
+        allActiveTasks.push(taskOrObj);
     }
 
-    // Cálculo sequencial das subtarefas respeitando a fila do Gantt, mas indexando pelo índice original (idx) da lista
-    const orderedForTimeline = subs
-        .map((s, idx) => ({ s, idx }))
-        .sort((a, b) => {
-            const tierA = getSubtaskQueuePriorityTier(a.s);
-            const tierB = getSubtaskQueuePriorityTier(b.s);
-            if (tierA !== tierB) return tierA - tierB;
-            return a.idx - b.idx;
+    // Cursores de tempo por pessoa (sempre iniciando de HOJE em diante)
+    const personCursorMap = new Map();
+    const getPersonKey = (rawAssignee, fallbackAuthor) => {
+        const parsed = parseAssigneesList(rawAssignee || fallbackAuthor || 'Sem responsável');
+        return normalizeIdentityStr(parsed[0] || 'sem_responsavel');
+    };
+    const getPersonLabel = (rawAssignee, fallbackAuthor) => {
+        const parsed = parseAssigneesList(rawAssignee || fallbackAuthor || '');
+        return parsed[0] || null;
+    };
+
+    // Agrupa subtarefas pendentes por pessoa respeitando a ordem das tarefas e a fila de prioridade (Tier)
+    const pendingByPerson = new Map();
+    allActiveTasks.forEach((tObj, tOrderIdx) => {
+        const tSubs = Array.isArray(tObj.subtasks) ? tObj.subtasks : [];
+        tSubs.forEach((s, sIdx) => {
+            if (Boolean(s.completed) || tObj.status === 'done') return;
+            const pKey = getPersonKey(s.assignee, tObj.author);
+            const pLabel = getPersonLabel(s.assignee, tObj.author);
+            if (!pendingByPerson.has(pKey)) {
+                pendingByPerson.set(pKey, { personLabel: pLabel, items: [] });
+            }
+            const tBaseMs = tObj.createdAt
+                ? new Date(tObj.createdAt).setHours(0, 0, 0, 0)
+                : todayZeroMs;
+            pendingByPerson.get(pKey).items.push({
+                taskObj: tObj,
+                isTargetTask: (tObj === taskOrObj) || Boolean(taskOrObj.id && tObj.id === taskOrObj.id),
+                taskOrderIdx: tOrderIdx,
+                sub: s,
+                subIdx: sIdx,
+                tier: getSubtaskQueuePriorityTier(s),
+                minStartMs: Math.max(nowShiftCursorMs, tBaseMs),
+                simultaneous: Boolean(tObj.simultaneous)
+            });
+        });
+    });
+
+    pendingByPerson.forEach(group => {
+        // Organiza todas as subtarefas não executadas da mesma pessoa:
+        // 1º Pelo Tier global (ex: Normais e "Revisar e produzir" antes de "Aguardando desenho" / "Aprovação do cliente")
+        // 2º Pela ordem das tarefas (ou intercaladas se forem simultâneas) e índice da subtarefa
+        const items = group.items;
+        items.sort((a, b) => {
+            if (a.tier !== b.tier) return a.tier - b.tier;
+            if (a.taskOrderIdx !== b.taskOrderIdx) return a.taskOrderIdx - b.taskOrderIdx;
+            return a.subIdx - b.subIdx;
         });
 
-    orderedForTimeline.forEach(({ s, idx }) => {
-        const h = Math.max(0.1, Number(s.hours) || 2);
-        const subMember = (s.assignee || taskOrObj.author || '').trim() || null;
-        const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings, subMember);
-        cursorMs = alloc.nextCursorMs;
+        let cursorMs = nowShiftCursorMs;
+        items.forEach(entry => {
+            if (entry.minStartMs > cursorMs) {
+                cursorMs = entry.minStartMs;
+            }
+            const h = Math.max(0.1, Number(entry.sub.hours) || 2);
+            const alloc = allocateWorkingHoursOnTimeline(cursorMs, h, settings, group.personLabel);
+            cursorMs = alloc.nextCursorMs;
 
-        const exceeds = Boolean(dueEndMs && alloc.endMs > dueEndMs && !s.completed);
-        const excessHours = (dueEndMs && alloc.endMs > dueEndMs)
-            ? Math.max(0.1, Math.round(((alloc.endMs - dueEndMs) / (1000 * 60 * 60 * 24)) * DAILY_WORK_HOURS * 10) / 10)
-            : 0;
-
-        if (exceeds) {
-            result.taskExceedsDeadline = true;
-            result.exceedingPendingCount++;
-        }
-
-        result.subtaskMap[idx] = {
-            startMs: alloc.startMs,
-            endMs: alloc.endMs,
-            exceedsDeadline: exceeds,
-            excessHours,
-            endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
-        };
+            if (entry.isTargetTask) {
+                const exceeds = Boolean(dueEndMs && alloc.endMs > dueEndMs);
+                const excessHours = (dueEndMs && alloc.endMs > dueEndMs)
+                    ? Math.max(0.1, Math.round(((alloc.endMs - dueEndMs) / (1000 * 60 * 60 * 24)) * DAILY_WORK_HOURS * 10) / 10)
+                    : 0;
+                if (exceeds) {
+                    result.taskExceedsDeadline = true;
+                    result.exceedingPendingCount++;
+                }
+                result.subtaskMap[entry.subIdx] = {
+                    startMs: alloc.startMs,
+                    endMs: alloc.endMs,
+                    exceedsDeadline: exceeds,
+                    excessHours,
+                    endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+                };
+            }
+        });
     });
 
     return result;
@@ -3779,51 +3807,137 @@ async function moveTaskOrder(taskId, delta) {
         sortSelect.value = 'manual';
     }
 
-    // Garante ordem sequencial base antes da troca
+    // Congela a ordem atualmente visível na tela antes da troca para não embaralhar as demais tarefas
     const visible = getFilteredTasks();
     const vIdx = visible.findIndex(t => t.id === taskId);
     if (vIdx === -1) return;
     const targetVIdx = vIdx + delta;
     if (targetVIdx < 0 || targetVIdx >= visible.length) return;
 
-    const taskA = visible[vIdx];
-    const taskB = visible[targetVIdx];
+    const reorderedVisible = [...visible];
+    const tempV = reorderedVisible[vIdx];
+    reorderedVisible[vIdx] = reorderedVisible[targetVIdx];
+    reorderedVisible[targetVIdx] = tempV;
 
-    const idxA = tasks.findIndex(t => t.id === taskA.id);
-    const idxB = tasks.findIndex(t => t.id === taskB.id);
-    if (idxA === -1 || idxB === -1) return;
-
-    // Troca a posição no array principal e atualiza manualOrder
-    const temp = tasks[idxA];
-    tasks[idxA] = tasks[idxB];
-    tasks[idxB] = temp;
-
-    tasks.forEach((t, i) => { t.manualOrder = i; });
+    const visibleIdsSet = new Set(reorderedVisible.map(t => t.id));
+    const hiddenTasks = tasks.filter(t => !visibleIdsSet.has(t.id));
+    tasks = [...reorderedVisible, ...hiddenTasks];
+    tasks.forEach((t, i) => {
+        t.manualOrder = i;
+        t.updatedAt = Date.now();
+    });
+    saveLocalCacheOnly();
     renderAll();
     await syncLocalToCloud();
 }
 
-// Reordenação de Tarefas por Drag-and-Drop diretamente sobre outro cartão
+// Reordenação de Tarefas por Drag-and-Drop diretamente na Lista ou no Kanban
+function handleTaskRowDragStart(e, taskId) {
+    if (!hasUserPermission('canEdit') && !hasUserPermission('canChangeStatus')) {
+        e.preventDefault();
+        showToast('Você não tem permissão para reordenar tarefas.', 'error');
+        return;
+    }
+    // Evita iniciar arraste quando o usuário estiver interagindo com um select, input ou botão específico
+    if (e.target && ['SELECT', 'INPUT', 'TEXTAREA', 'OPTION'].includes(e.target.tagName)) {
+        e.preventDefault();
+        return;
+    }
+    draggedTaskId = taskId;
+    if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', taskId);
+    }
+    const rowEl = e.currentTarget;
+    if (rowEl) {
+        setTimeout(() => rowEl.classList.add('opacity-40', 'bg-indigo-500/10'), 0);
+    }
+}
+
+function handleTaskRowDragEnd(e) {
+    if (e && e.currentTarget) {
+        e.currentTarget.classList.remove('opacity-40', 'bg-indigo-500/10');
+    }
+    document.querySelectorAll('[data-task-card-id]').forEach(el => {
+        el.classList.remove(
+            'ring-2',
+            'ring-indigo-500/60',
+            'border-t-4',
+            'border-b-4',
+            'border-t-indigo-500',
+            'border-b-indigo-500'
+        );
+    });
+}
+
 function handleCardDragOver(e) {
     e.preventDefault();
-    e.currentTarget.classList.add('ring-2', 'ring-indigo-500/60');
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const el = e.currentTarget;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const isAfter = (e.clientY - rect.top) > (rect.height / 2);
+    el.setAttribute('data-drop-pos', isAfter ? 'after' : 'before');
+    el.classList.add('ring-2', 'ring-indigo-500/60');
+    if (isAfter) {
+        el.classList.add('border-b-4', 'border-b-indigo-500');
+        el.classList.remove('border-t-4', 'border-t-indigo-500');
+    } else {
+        el.classList.add('border-t-4', 'border-t-indigo-500');
+        el.classList.remove('border-b-4', 'border-b-indigo-500');
+    }
 }
 
 function handleCardDragLeave(e) {
-    e.currentTarget.classList.remove('ring-2', 'ring-indigo-500/60');
+    const el = e.currentTarget;
+    if (!el) return;
+    el.classList.remove(
+        'ring-2',
+        'ring-indigo-500/60',
+        'border-t-4',
+        'border-b-4',
+        'border-t-indigo-500',
+        'border-b-indigo-500'
+    );
 }
 
 async function handleCardDropReorder(e, targetTaskId) {
     e.preventDefault();
     e.stopPropagation();
-    e.currentTarget.classList.remove('ring-2', 'ring-indigo-500/60');
+    const el = e.currentTarget;
+    const dropPos = el?.getAttribute('data-drop-pos') || 'before';
+    if (el) {
+        el.classList.remove(
+            'ring-2',
+            'ring-indigo-500/60',
+            'border-t-4',
+            'border-b-4',
+            'border-t-indigo-500',
+            'border-b-indigo-500'
+        );
+    }
 
-    const sourceTaskId = draggedTaskId || e.dataTransfer.getData('text/plain');
+    const sourceTaskId = draggedTaskId || (e.dataTransfer ? e.dataTransfer.getData('text/plain') : '');
+    draggedTaskId = null;
     if (!sourceTaskId || sourceTaskId === targetTaskId) return;
 
-    const srcIdx = tasks.findIndex(t => t.id === sourceTaskId);
-    const tgtIdx = tasks.findIndex(t => t.id === targetTaskId);
-    if (srcIdx === -1 || tgtIdx === -1) return;
+    // Captura a lista visível exatamente na ordem atual da tela antes de ativar o modo manual
+    const currentVisibleList = [...getFilteredTasks()];
+    const srcVisIdx = currentVisibleList.findIndex(t => t.id === sourceTaskId);
+    const tgtVisIdx = currentVisibleList.findIndex(t => t.id === targetTaskId);
+    if (srcVisIdx === -1 || tgtVisIdx === -1) return;
+
+    const [movedTask] = currentVisibleList.splice(srcVisIdx, 1);
+    let newTargetIdx = currentVisibleList.findIndex(t => t.id === targetTaskId);
+    if (dropPos === 'after') {
+        newTargetIdx += 1;
+    }
+    currentVisibleList.splice(Math.max(0, newTargetIdx), 0, movedTask);
+
+    // Preserva tarefas ocultas por filtro após as visíveis e grava manualOrder sequencial
+    const visibleIdsSet = new Set(currentVisibleList.map(t => t.id));
+    const hiddenTasks = tasks.filter(t => !visibleIdsSet.has(t.id));
+    tasks = [...currentVisibleList, ...hiddenTasks];
 
     window._currentSortMode = 'manual';
     if (typeof setSavedSortMode === 'function') setSavedSortMode('manual');
@@ -3832,13 +3946,15 @@ async function handleCardDropReorder(e, targetTaskId) {
         sortSelect.value = 'manual';
     }
 
-    const [movedTask] = tasks.splice(srcIdx, 1);
-    tasks.splice(tgtIdx, 0, movedTask);
-    tasks.forEach((t, i) => { t.manualOrder = i; });
+    tasks.forEach((t, i) => {
+        t.manualOrder = i;
+        t.updatedAt = Date.now();
+    });
 
+    saveLocalCacheOnly();
     renderAll();
     await syncLocalToCloud();
-    showToast('Posição da tarefa reordenada no Firebase!', 'info');
+    showToast('Ordem das tarefas atualizada!', 'info');
 }
 
 // Reordenação de Subtarefas diretamente no Cartão da Tarefa (▲ / ▼)
@@ -4264,17 +4380,28 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                     const canReassignAnySubtask = isCurrentUserAdmin || isTaskOwner;
 
                     return `
-                        <div data-task-card-id="${task.id}" onclick="setActiveHighlightedTask('${task.id}', event)" class="transition ${
-                            isHighlighted
-                                ? 'bg-indigo-50/70 dark:bg-indigo-950/35 ring-1 ring-inset ring-indigo-500/50'
-                                : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/40'
-                        } ${task.status === 'done' && !isHighlighted ? 'opacity-65' : ''}">
+                        <div data-task-card-id="${task.id}"
+                             draggable="true"
+                             ondragstart="handleTaskRowDragStart(event, '${task.id}')"
+                             ondragend="handleTaskRowDragEnd(event)"
+                             ondragover="handleCardDragOver(event)"
+                             ondragleave="handleCardDragLeave(event)"
+                             ondrop="handleCardDropReorder(event, '${task.id}')"
+                             onclick="setActiveHighlightedTask('${task.id}', event)"
+                             class="transition ${
+                                isHighlighted
+                                    ? 'bg-indigo-50/70 dark:bg-indigo-950/35 ring-1 ring-inset ring-indigo-500/50'
+                                    : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/40'
+                             } ${task.status === 'done' && !isHighlighted ? 'opacity-65' : ''}">
                             
-                            <!-- Linha Compacta Principal (Clique na tarefa macro expande/recolhe subtarefas) -->
-                            <div onclick="handleTaskHeaderClick(event, '${task.id}')" class="grid grid-cols-1 md:grid-cols-12 gap-2.5 md:gap-3 px-4 py-2.5 items-center text-xs cursor-pointer select-none">
+                            <!-- Linha Compacta Principal (Clique para expandir/recolher ou Arraste para reordenar) -->
+                            <div onclick="handleTaskHeaderClick(event, '${task.id}')" class="grid grid-cols-1 md:grid-cols-12 gap-2.5 md:gap-3 px-4 py-2.5 items-center text-xs cursor-grab active:cursor-grabbing select-none">
                                 
-                                <!-- Coluna 1: Reordenação + Título + Botão Expandir Itens -->
+                                <!-- Coluna 1: Alça de Arrastar + Reordenação + Título + Botão Expandir Itens -->
                                 <div class="md:col-span-5 flex items-center gap-2 min-w-0">
+                                    <span class="text-slate-400 hover:text-indigo-500 dark:text-slate-500 dark:hover:text-indigo-400 cursor-grab active:cursor-grabbing px-1 shrink-0 transition" title="Clique e arraste para mover esta tarefa para a posição desejada">
+                                        <i class="fa-solid fa-grip-vertical text-xs"></i>
+                                    </span>
                                     <div class="inline-flex items-center rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-0.5 shrink-0" onclick="event.stopPropagation()">
                                         <button type="button" onclick="moveTaskOrder('${task.id}', -1)" class="w-4 h-4 rounded hover:bg-white dark:hover:bg-slate-700 text-slate-400 hover:text-indigo-500 flex items-center justify-center" title="Subir">
                                             <i class="fa-solid fa-chevron-up text-[8px]"></i>
@@ -4914,8 +5041,13 @@ function openWorkSettingsModal() {
 
                     <!-- SEÇÃO 2: PADRÃO SEMANAL DA EQUIPE -->
                     <div class="space-y-2">
-                        <div class="font-bold uppercase tracking-wider text-[11px] text-slate-500 dark:text-slate-400">
-                            Padrão Semanal da Equipe (8h/dia):
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <span class="font-bold uppercase tracking-wider text-[11px] text-slate-500 dark:text-slate-400">
+                                Padrão Semanal da Equipe (8h/dia):
+                            </span>
+                            <span class="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 font-mono text-[11px] font-extrabold">
+                                ⏰ Turnos: 08:00 às 12:00 (4h) • 13:00 às 17:00 (4h)
+                            </span>
                         </div>
 
                         <div class="grid grid-cols-2 gap-2">
@@ -5339,13 +5471,81 @@ function jumpGanttTimelineToDate(dateStr) {
     renderAll();
 }
 
+// Jornada de Trabalho Padrão: 08:00 às 12:00 (4h) e 13:00 às 17:00 (4h) = 8h úteis/dia
+const WORK_SHIFT_MORNING_START_HOUR = 8;
+const WORK_SHIFT_MORNING_END_HOUR   = 12;
+const WORK_SHIFT_AFTERNOON_START_HOUR = 13;
+const WORK_SHIFT_AFTERNOON_END_HOUR   = 17;
+
+/**
+ * Converte a hora atual do relógio dentro da jornada (08:00–12:00 e 13:00–17:00)
+ * para a fração exata (0.0 a 1.0) da coluna do dia na Timeline:
+ * - Antes das 08:00 -> 0.0 (início da jornada do dia, 8h disponíveis)
+ * - Entre 08:00 e 12:00 -> 0.0 a 0.5 (turno da manhã: 4h)
+ * - Entre 12:00 e 13:00 (horário de almoço) -> 0.5 (4h restantes no turno da tarde)
+ * - Entre 13:00 e 17:00 -> 0.5 a 1.0 (turno da tarde: 4h)
+ * - Após as 17:00 -> 1.0 (fim do expediente do dia, avança para o início do próximo dia útil)
+ */
+function getWorkShiftDayFraction(dateObj = new Date()) {
+    const decimalHour = dateObj.getHours() + (dateObj.getMinutes() / 60) + (dateObj.getSeconds() / 3600);
+    if (decimalHour <= WORK_SHIFT_MORNING_START_HOUR) {
+        return 0;
+    }
+    if (decimalHour <= WORK_SHIFT_MORNING_END_HOUR) {
+        const workedMorning = decimalHour - WORK_SHIFT_MORNING_START_HOUR; // 0 a 4h
+        return workedMorning / DAILY_WORK_HOURS; // 0.0 a 0.5
+    }
+    if (decimalHour <= WORK_SHIFT_AFTERNOON_START_HOUR) {
+        return 4 / DAILY_WORK_HOURS; // 0.5 (intervalo de almoço 12:00–13:00)
+    }
+    if (decimalHour < WORK_SHIFT_AFTERNOON_END_HOUR) {
+        const workedAfternoon = 4 + (decimalHour - WORK_SHIFT_AFTERNOON_START_HOUR); // 4 a 8h
+        return workedAfternoon / DAILY_WORK_HOURS; // 0.5 a 1.0
+    }
+    return 1; // >= 17:00 (expediente encerrado hoje)
+}
+
+/**
+ * Retorna o timestamp (cursor em ms) correspondente ao instante atual dentro da jornada
+ * das 08:00 às 12:00 e das 13:00 às 17:00, para que as subtarefas não executadas iniciem
+ * exatamente a partir de AGORA (na linha vermelha) em diante!
+ */
+function getCurrentWorkingShiftCursorMs(dateObj = new Date()) {
+    const DAY_MS = 86400000;
+    const todayZeroMs = new Date(dateObj).setHours(0, 0, 0, 0);
+    const shiftFraction = getWorkShiftDayFraction(dateObj);
+    return todayZeroMs + Math.round(shiftFraction * DAY_MS);
+}
+
+/**
+ * Converte um cursor linear da Timeline (0.0 a 1.0 dentro do dia) para o horário real do relógio
+ * respeitando os dois turnos (08:00–12:00 e 13:00–17:00).
+ */
+function formatTimelineCursorClockTime(timelineMs) {
+    const DAY_MS = 86400000;
+    const dayStartMs = new Date(timelineMs).setHours(0, 0, 0, 0);
+    const fraction = Math.max(0, Math.min(1, (timelineMs - dayStartMs) / DAY_MS));
+    const workedHours = fraction * DAILY_WORK_HOURS; // 0 a 8h
+    let clockHourDecimal;
+    if (workedHours <= 4.0001) {
+        clockHourDecimal = WORK_SHIFT_MORNING_START_HOUR + workedHours; // 08:00 a 12:00
+    } else {
+        clockHourDecimal = WORK_SHIFT_AFTERNOON_START_HOUR + (workedHours - 4); // 13:00 a 17:00
+    }
+    const hh = Math.floor(clockHourDecimal + 1e-6);
+    const mm = Math.round((clockHourDecimal - hh) * 60);
+    const finalH = mm === 60 ? hh + 1 : hh;
+    const finalM = mm === 60 ? 0 : mm;
+    return `${String(finalH).padStart(2, '0')}:${String(finalM).padStart(2, '0')}`;
+}
+
 function getNowTimelineMetrics(viewStartMs, totalTimelineDays) {
     const DAY_MS = 1000 * 60 * 60 * 24;
     const now = new Date();
     const todayZeroMs = new Date(now).setHours(0, 0, 0, 0);
 
-    const secondsInDay = (now.getHours() * 3600) + (now.getMinutes() * 60) + now.getSeconds();
-    const dayFraction = secondsInDay / 86400;
+    // Posiciona a linha vermelha ("AGORA") exatamente na fração da jornada útil (08:00–12:00 e 13:00–17:00)
+    const dayFraction = getWorkShiftDayFraction(now);
 
     const exactNowMs = todayZeroMs + (dayFraction * DAY_MS);
     const totalSpanMs = totalTimelineDays * DAY_MS;
@@ -5358,7 +5558,8 @@ function getNowTimelineMetrics(viewStartMs, totalTimelineDays) {
         isVisible: percentLeft >= 0 && percentLeft <= 100,
         percentLeft: Math.max(0, Math.min(100, percentLeft)),
         dateTimeLabel,
-        todayZeroMs
+        todayZeroMs,
+        exactNowMs
     };
 }
 
@@ -5601,6 +5802,9 @@ function renderGanttView(filteredTasks, containerEl) {
     const scheduledByUser = {};
     let totalSystemHours = 0;
 
+    const ganttTodayZeroMs = new Date().setHours(0, 0, 0, 0);
+    const ganttNowShiftCursorMs = getCurrentWorkingShiftCursorMs();
+
     userNames.forEach(user => {
         const rawItems = workItemsByUser[user];
         const macroGroupsMap = new Map();
@@ -5628,68 +5832,119 @@ function renderGanttView(filteredTasks, containerEl) {
             macroGroupsMap.get(item.taskId).subItems.push(item);
         });
 
-        macroGroupsMap.forEach(macro => {
-            macro.orderedQueue = [...macro.subItems].sort((a, b) => {
-                const tierA = getSubtaskQueuePriorityTier(a);
-                const tierB = getSubtaskQueuePriorityTier(b);
-                if (tierA !== tierB) return tierA - tierB;
-                return (a.subIdx ?? 0) - (b.subIdx ?? 0);
-            });
-            macro.queuePtr = 0;
-        });
-
-        let currentEpochMs = null;
         let userTotalHours = 0;
         let userDoneHours = 0;
-
         const allMacros = Array.from(macroGroupsMap.values());
-        let idxM = 0;
 
-        while (idxM < allMacros.length) {
-            const currentMacro = allMacros[idxM];
+        // 1º PASSO: Subtarefas JÁ CONCLUÍDAS (item.completed) são alocadas a partir da criação
+        let completedCursorMs = null;
+        allMacros.forEach(macro => {
+            const doneItems = macro.subItems
+                .filter(it => Boolean(it.completed))
+                .sort((a, b) => (a.subIdx ?? 0) - (b.subIdx ?? 0));
 
-            // Se a tarefa está marcada como Simultânea, intercala as subtarefas entre as tarefas simultâneas
-            if (currentMacro.simultaneous) {
-                const simGroup = allMacros.filter((m, k) => k >= idxM && m.simultaneous && !m._scheduledDone);
-                if (simGroup.length >= 2) {
-                    let hasRemaining = true;
-                    while (hasRemaining) {
-                        hasRemaining = false;
-                        for (const m of simGroup) {
-                            if (m.queuePtr < m.orderedQueue.length) {
-                                hasRemaining = true;
-                                const item = m.orderedQueue[m.queuePtr++];
-                                if (currentEpochMs === null || item.baseStartMs > currentEpochMs) {
-                                    currentEpochMs = item.baseStartMs;
-                                }
-                                const alloc = allocateWorkingHoursOnTimeline(currentEpochMs, item.hours, settings, user);
-                                currentEpochMs = alloc.nextCursorMs;
+            doneItems.forEach(item => {
+                if (completedCursorMs === null || item.baseStartMs > completedCursorMs) {
+                    completedCursorMs = item.baseStartMs;
+                }
+                const alloc = allocateWorkingHoursOnTimeline(completedCursorMs, item.hours, settings, user);
+                completedCursorMs = alloc.nextCursorMs;
+                macro.scheduledSubs.push({
+                    ...item,
+                    startMs: alloc.startMs,
+                    endMs: alloc.endMs,
+                    exceedsDeadline: false,
+                    endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+                    durationDays: (item.hours / DAILY_WORK_HOURS).toFixed(2)
+                });
+            });
+        });
 
-                                const exceedsDeadline = Boolean(m.dueEndMs && alloc.endMs > m.dueEndMs && !item.completed);
-                                m.scheduledSubs.push({
-                                    ...item,
-                                    startMs: alloc.startMs,
-                                    endMs: alloc.endMs,
-                                    exceedsDeadline,
-                                    endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
-                                    durationDays: (item.hours / DAILY_WORK_HOURS).toFixed(2)
-                                });
-                            }
-                        }
-                    }
-                    simGroup.forEach(m => { m._scheduledDone = true; });
+        // 2º PASSO: Subtarefas NÃO EXECUTADAS (!item.completed) de TODAS as tarefas desta mesma pessoa:
+        // - Sempre posicionadas da DATA DE HOJE (ganttTodayZeroMs) em diante!
+        // - Organizadas de forma unificada entre todas as tarefas da pessoa (respeitando fila de prioridade/Tier,
+        //   ordem das tarefas e intercalação quando tarefas são marcadas como Simultâneas).
+        allMacros.forEach((macro, mIdx) => {
+            macro._macroOrderIdx = mIdx;
+            macro.pendingQueue = macro.subItems
+                .filter(it => !it.completed)
+                .sort((a, b) => {
+                    const tierA = getSubtaskQueuePriorityTier(a);
+                    const tierB = getSubtaskQueuePriorityTier(b);
+                    if (tierA !== tierB) return tierA - tierB;
+                    return (a.subIdx ?? 0) - (b.subIdx ?? 0);
+                });
+        });
+
+        // Coleta todos os níveis de prioridade (Tier 1 = Revisar/Produzir, Tier 2 = Em execução normal, Tiers 3..5 = Aguardando)
+        // para que uma subtarefa em "Aguardando" de uma tarefa não atrase as subtarefas ativas das demais tarefas da mesma pessoa!
+        let pendingCursorMs = ganttNowShiftCursorMs;
+        const distinctTiers = Array.from(
+            new Set(
+                allMacros.flatMap(m => m.pendingQueue.map(it => getSubtaskQueuePriorityTier(it)))
+            )
+        ).sort((a, b) => a - b);
+
+        distinctTiers.forEach(currentTier => {
+            allMacros.forEach(m => {
+                m._tierQueue = m.pendingQueue.filter(it => getSubtaskQueuePriorityTier(it) === currentTier);
+                m._tierPtr = 0;
+                m._tierDone = m._tierQueue.length === 0;
+            });
+
+            let idxM = 0;
+            while (idxM < allMacros.length) {
+                const currentMacro = allMacros[idxM];
+                if (currentMacro._tierDone) {
                     idxM++;
                     continue;
                 }
-            }
 
-            if (!currentMacro._scheduledDone) {
-                currentMacro.orderedQueue.forEach(item => {
-                    if (currentEpochMs === null || item.baseStartMs > currentEpochMs) {
-                        currentEpochMs = item.baseStartMs;
+                // Se a tarefa está marcada como Simultânea, intercala as subtarefas deste Tier entre as tarefas simultâneas da pessoa
+                if (currentMacro.simultaneous) {
+                    const simGroup = allMacros.filter((m, k) => k >= idxM && m.simultaneous && !m._tierDone);
+                    if (simGroup.length >= 2) {
+                        let hasRemaining = true;
+                        while (hasRemaining) {
+                            hasRemaining = false;
+                            for (const m of simGroup) {
+                                if (m._tierPtr < m._tierQueue.length) {
+                                    hasRemaining = true;
+                                    const item = m._tierQueue[m._tierPtr++];
+                                    const minStartMs = Math.max(ganttNowShiftCursorMs, item.baseStartMs);
+                                    if (pendingCursorMs < minStartMs) {
+                                        pendingCursorMs = minStartMs;
+                                    }
+                                    const alloc = allocateWorkingHoursOnTimeline(pendingCursorMs, item.hours, settings, user);
+                                    pendingCursorMs = alloc.nextCursorMs;
+
+                                    const exceedsDeadline = Boolean(m.dueEndMs && alloc.endMs > m.dueEndMs && !item.completed);
+                                    m.scheduledSubs.push({
+                                        ...item,
+                                        startMs: alloc.startMs,
+                                        endMs: alloc.endMs,
+                                        exceedsDeadline,
+                                        endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+                                        durationDays: (item.hours / DAILY_WORK_HOURS).toFixed(2)
+                                    });
+                                }
+                            }
+                        }
+                        simGroup.forEach(m => { m._tierDone = true; });
+                        idxM++;
+                        continue;
                     }
-                    const alloc = allocateWorkingHoursOnTimeline(currentEpochMs, item.hours, settings, user);
-                    currentEpochMs = alloc.nextCursorMs;
+                }
+
+                // Execução sequencial das subtarefas pendentes desta tarefa a partir de Hoje (e após as tarefas anteriores da mesma pessoa)
+                while (currentMacro._tierPtr < currentMacro._tierQueue.length) {
+                    const item = currentMacro._tierQueue[currentMacro._tierPtr++];
+                    const minStartMs = Math.max(ganttNowShiftCursorMs, item.baseStartMs);
+                    if (pendingCursorMs < minStartMs) {
+                        pendingCursorMs = minStartMs;
+                    }
+                    const alloc = allocateWorkingHoursOnTimeline(pendingCursorMs, item.hours, settings, user);
+                    pendingCursorMs = alloc.nextCursorMs;
 
                     const exceedsDeadline = Boolean(currentMacro.dueEndMs && alloc.endMs > currentMacro.dueEndMs && !item.completed);
                     currentMacro.scheduledSubs.push({
@@ -5700,11 +5955,20 @@ function renderGanttView(filteredTasks, containerEl) {
                         endFormatted: new Date(alloc.endMs - 1000).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
                         durationDays: (item.hours / DAILY_WORK_HOURS).toFixed(2)
                     });
-                });
-                currentMacro._scheduledDone = true;
+                }
+                currentMacro._tierDone = true;
+                idxM++;
             }
-            idxM++;
-        }
+        });
+
+        // Ordena as subtarefas agendadas dentro de cada tarefa principal pela ordem de início planejada
+        allMacros.forEach(m => {
+            m.scheduledSubs.sort((a, b) => {
+                if (a.completed !== b.completed) return a.completed ? -1 : 1;
+                if (a.startMs !== b.startMs) return a.startMs - b.startMs;
+                return (a.subIdx ?? 0) - (b.subIdx ?? 0);
+            });
+        });
 
         const macroList = allMacros.map(macro => {
             let subMinStartMs = Infinity;
@@ -5833,8 +6097,8 @@ function renderGanttView(filteredTasks, containerEl) {
                 <!-- Linha 1: Indicadores de Capacidade (Esquerda) | Controles de Escala e Jornada (Direita) -->
                 <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-700/70">
                     <div class="flex flex-wrap items-center gap-1.5">
-                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-[11px] font-bold">
-                            <i class="fa-solid fa-chart-gantt"></i> Timeline (8h/dia)
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 text-[11px] font-bold" title="Jornada de Trabalho: 08:00 às 12:00 (4h) e 13:00 às 17:00 (4h) = 8h úteis/dia">
+                            <i class="fa-solid fa-chart-gantt"></i> Jornada: 08:00–12:00 e 13:00–17:00 (8h/dia)
                         </span>
                         <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 text-[11px] font-bold">
                             <i class="fa-regular fa-clock"></i> Carga: ${formatTotalHours1Dec(totalSystemHours)}h (${(totalSystemHours / DAILY_WORK_HOURS).toFixed(1)}d úteis)
@@ -6398,7 +6662,9 @@ function renderGanttView(filteredTasks, containerEl) {
                 const offScreenNotice = isOffScreenLeft
                     ? ` | ⬅️ FORA DA JANELA (Programada em ${itemStartFormatted} a ${item.endFormatted} — Não finalizada)`
                     : (isOffScreenRight ? ` | ➡️ FORA DA JANELA (Programada para ${itemStartFormatted} a ${item.endFormatted} — Não finalizada)` : '');
-                const tooltipSub = `${isGroupedDoubleBar ? '🔀 SUBTAREFA AGRUPADA (DOBRO DA ESPESSURA) — ' : 'Subtarefa: '}${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h)${offScreenNotice}${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
+                const startClockLbl = `${new Date(item.startMs).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} ${formatTimelineCursorClockTime(item.startMs)}`;
+                const endClockLbl   = `${new Date(Math.max(item.startMs, item.endMs - 1000)).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} ${formatTimelineCursorClockTime(item.endMs)}`;
+                const tooltipSub = `${isGroupedDoubleBar ? '🔀 SUBTAREFA AGRUPADA (DOBRO DA ESPESSURA) — ' : 'Subtarefa: '}${item.itemTitle} | Duração: ${item.hours}h (${item.durationDays}d de 8h) | Horário Previsto (08:00–12:00 / 13:00–17:00): ${startClockLbl} até ${endClockLbl}${offScreenNotice}${item.waiting ? ' | ⏸️ AGUARDANDO: ' + (item.waitingReason || 'Sem motivo informado') : ''}${item.exceedsDeadline ? ' | ⚠️ EXCEDE O PRAZO FINAL DA TAREFA (' + formatDisplayDate(item.dueDate) + ') — Término previsto: ' + item.endFormatted : ''}`;
 
                 const offScreenArrowBadgeHtml = offScreenArrowDirection === 'left'
                     ? `<button type="button" onclick="event.stopPropagation(); jumpGanttTimelineToDate('${itemStartIso}')" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[9px] shadow-sm shrink-0 animate-pulse cursor-pointer" title="Subtarefa não finalizada programada em ${itemStartFormatted} (fora da visão à esquerda). Clique na seta para ir até a data!">
