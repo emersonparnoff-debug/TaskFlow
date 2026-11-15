@@ -1125,11 +1125,12 @@ function renderTaskCardHTML(task) {
                     </div>
                 </div>
 
-                <!-- Linha do Título do Pedido/Tarefa + Resumo Rápido do Responsável -->
+                <!-- Linha do Título do Pedido/Tarefa + Ícone de Observação -->
                 <div class="flex items-start justify-between gap-2">
                     <h4 class="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-100 leading-snug ${task.status === 'done' ? 'line-through text-slate-400 dark:text-slate-500' : ''}">
                         ${escapeHtml(task.title)}
                     </h4>
+                    ${renderObservationIconBadgeHTML(task.id, null, task.observation)}
                 </div>
                 ${(task.status === 'waiting' || (task.waiting && task.waitingReason)) ? `
                     <div onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', null)" class="px-2.5 py-1.5 rounded-xl border ${getWaitingReasonColors(task.waitingReason, 'badge')} text-[11px] font-semibold flex items-center justify-between gap-2 cursor-pointer hover:opacity-85 transition" title="Clique para editar o motivo ou retomar a tarefa">
@@ -1202,7 +1203,7 @@ function renderTaskCardHTML(task) {
                                     const subExceeds = Boolean(subDeadlineInfo.exceedsDeadline && !sub.completed);
 
                                     return `
-                                        <div class="rounded-xl border ${subExceeds ? 'border-rose-500/60 bg-rose-500/10 dark:bg-rose-950/25 ring-1 ring-rose-500/30' : (isAssignedToMe ? 'border-indigo-500/40 bg-indigo-500/5 dark:bg-indigo-500/10' : 'border-slate-200/80 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-800/40')} p-2 space-y-1.5 transition">
+                                        <div data-obs-task="${task.id}" data-obs-subtask="${sIdx}" class="rounded-xl border ${subExceeds ? 'border-rose-500/60 bg-rose-500/10 dark:bg-rose-950/25 ring-1 ring-rose-500/30' : (isAssignedToMe ? 'border-indigo-500/40 bg-indigo-500/5 dark:bg-indigo-500/10' : 'border-slate-200/80 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-800/40')} p-2 space-y-1.5 transition" title="Clique com o botão direito para adicionar ou editar observação">
                                             <!-- Cabeçalho da Subtarefa (Item) + Botões de Reordenação -->
                                             <div class="flex items-start justify-between gap-2 text-xs">
                                                 <div class="flex items-start gap-1.5 min-w-0 flex-1">
@@ -1219,6 +1220,7 @@ function renderTaskCardHTML(task) {
                                                         <input type="checkbox" ${sub.completed ? 'checked' : ''} ${allowSubtasks ? '' : 'disabled'} onchange="toggleSubtaskStatus('${task.id}', ${sIdx})" class="mt-0.5 rounded text-indigo-600 w-3.5 h-3.5 bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-600 shrink-0 cursor-pointer">
                                                         <span class="font-semibold text-slate-700 dark:text-slate-200 leading-snug break-words ${sub.completed ? 'line-through opacity-55' : ''}">${escapeHtml(sub.text)}</span>
                                                     </label>
+                                                    ${renderObservationIconBadgeHTML(task.id, sIdx, sub.observation)}
                                                 </div>
                                                 <div class="flex items-center gap-1 shrink-0">
                                                     ${hasInner ? `
@@ -1621,6 +1623,9 @@ function ensureSubtaskStructure(subtasksList) {
         }
         if (s.waitingReason === undefined) {
             s.waitingReason = '';
+        }
+        if (s.observation === undefined) {
+            s.observation = '';
         }
         if (s.hours === undefined || isNaN(Number(s.hours)) || Number(s.hours) <= 0) {
             s.hours = 2; // Padrão: 2h por subtarefa (4 subtarefas = 1 dia útil de 8h)
@@ -2494,7 +2499,7 @@ function renderModalSubtasks() {
             }).join('');
 
         return `
-            <li class="rounded-xl bg-slate-50 dark:bg-slate-800/70 border ${subModalExceeds ? 'border-rose-500/60 ring-1 ring-rose-500/30' : (isExpanded ? 'border-indigo-500/50 shadow-sm' : 'border-slate-200 dark:border-slate-700')} overflow-hidden transition">
+            <li data-obs-mode="modal" data-obs-subtask="${sIdx}" class="rounded-xl bg-slate-50 dark:bg-slate-800/70 border ${subModalExceeds ? 'border-rose-500/60 ring-1 ring-rose-500/30' : (isExpanded ? 'border-indigo-500/50 shadow-sm' : 'border-slate-200 dark:border-slate-700')} overflow-hidden transition" title="Clique com o botão direito para adicionar ou editar observação">
                 <!-- Cabeçalho da Subtarefa no Modal + Reordenação + Atribuição de Membro (Dropdown ao clicar) -->
                 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-3 py-2 ${subModalExceeds ? 'bg-rose-500/10 dark:bg-rose-950/30' : 'bg-white/60 dark:bg-slate-800'}">
                     <div class="flex items-center gap-1.5 min-w-0 flex-1">
@@ -2512,6 +2517,7 @@ function renderModalSubtasks() {
                         </div>
                         <span class="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-mono font-bold text-[10px] shrink-0">Item #${sIdx + 1}</span>
                         <span class="truncate text-xs font-bold text-slate-800 dark:text-slate-100 ${sub.completed ? 'line-through opacity-60' : ''}" title="${escapeHtml(sub.text)}">${escapeHtml(sub.text)}</span>
+                        ${renderModalSubtaskObservationIconHTML(sIdx, sub.observation)}
                         ${subModalExceeds ? `
                             <span class="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[9px] font-extrabold shrink-0" title="Previsão de término (${subModalDl.endFormatted}) ultrapassa o vencimento da tarefa!">
                                 <i class="fa-solid fa-triangle-exclamation mr-0.5"></i>Excede prazo (${subModalDl.endFormatted})
@@ -3957,6 +3963,170 @@ async function handleCardDropReorder(e, targetTaskId) {
     showToast('Ordem das tarefas atualizada!', 'info');
 }
 
+// =========================================================================
+// DRAG-AND-DROP DE TAREFAS E SUBTAREFAS DIRETO NO DIAGRAMA DE GANTT
+// =========================================================================
+let ganttDragState = null; // { type: 'macro' | 'subtask', taskId: string, subIdx?: number }
+
+function handleGanttDragStart(e, type, taskId, subIdx = -1) {
+    if (!hasUserPermission('canEdit') && !hasUserPermission('canChangeStatus') && !hasUserPermission('canManageSubtasks')) {
+        e.preventDefault();
+        showToast('Sem permissão para reordenar itens no Gantt.', 'error');
+        return;
+    }
+    if (e.target && ['SELECT', 'INPUT', 'TEXTAREA', 'OPTION', 'BUTTON'].includes(e.target.tagName)) {
+        e.preventDefault();
+        return;
+    }
+    e.stopPropagation();
+    ganttDragState = { type, taskId, subIdx: Number(subIdx) };
+    if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', JSON.stringify(ganttDragState));
+    }
+    const el = e.currentTarget;
+    if (el) {
+        setTimeout(() => el.classList.add('opacity-40', 'scale-[0.99]'), 0);
+    }
+}
+
+function handleGanttDragEnd(e) {
+    if (e && e.currentTarget) {
+        e.currentTarget.classList.remove('opacity-40', 'scale-[0.99]');
+    }
+    ganttDragState = null;
+    document.querySelectorAll('[data-gantt-drop-zone]').forEach(el => {
+        el.classList.remove(
+            'ring-2', 'ring-indigo-400',
+            'border-t-4', 'border-b-4',
+            'border-t-indigo-400', 'border-b-indigo-400'
+        );
+    });
+}
+
+function handleGanttDragOver(e, targetType, targetTaskId, targetSubIdx = -1) {
+    if (!ganttDragState) return;
+    if (ganttDragState.type !== targetType) return;
+    if (targetType === 'subtask' && ganttDragState.taskId !== targetTaskId) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+
+    const el = e.currentTarget;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const isAfter = (e.clientY - rect.top) > (rect.height / 2);
+    el.setAttribute('data-drop-pos', isAfter ? 'after' : 'before');
+
+    el.classList.add('ring-2', 'ring-indigo-400');
+    if (isAfter) {
+        el.classList.add('border-b-4', 'border-b-indigo-400');
+        el.classList.remove('border-t-4', 'border-t-indigo-400');
+    } else {
+        el.classList.add('border-t-4', 'border-t-indigo-400');
+        el.classList.remove('border-b-4', 'border-b-indigo-400');
+    }
+}
+
+function handleGanttDragLeave(e) {
+    const el = e.currentTarget;
+    if (!el) return;
+    el.classList.remove(
+        'ring-2', 'ring-indigo-400',
+        'border-t-4', 'border-b-4',
+        'border-t-indigo-400', 'border-b-indigo-400'
+    );
+}
+
+async function handleGanttDrop(e, targetType, targetTaskId, targetSubIdx = -1) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const el = e.currentTarget;
+    const dropPos = el?.getAttribute('data-drop-pos') || 'before';
+    handleGanttDragLeave(e);
+
+    let dragInfo = ganttDragState;
+    if (!dragInfo && e.dataTransfer) {
+        try {
+            dragInfo = JSON.parse(e.dataTransfer.getData('text/plain'));
+        } catch (err) {}
+    }
+    ganttDragState = null;
+    if (!dragInfo || dragInfo.type !== targetType) return;
+
+    // 1. REORDENAÇÃO DE TAREFA PRINCIPAL (MACRO) NO GANTT
+    if (targetType === 'macro') {
+        const sourceTaskId = dragInfo.taskId;
+        if (!sourceTaskId || sourceTaskId === targetTaskId) return;
+
+        const currentVisibleList = [...getFilteredTasks()];
+        const srcVisIdx = currentVisibleList.findIndex(t => t.id === sourceTaskId);
+        const tgtVisIdx = currentVisibleList.findIndex(t => t.id === targetTaskId);
+        if (srcVisIdx === -1 || tgtVisIdx === -1) return;
+
+        const [movedTask] = currentVisibleList.splice(srcVisIdx, 1);
+        let newTargetIdx = currentVisibleList.findIndex(t => t.id === targetTaskId);
+        if (dropPos === 'after') newTargetIdx += 1;
+        currentVisibleList.splice(Math.max(0, newTargetIdx), 0, movedTask);
+
+        const visibleIdsSet = new Set(currentVisibleList.map(t => t.id));
+        const hiddenTasks = tasks.filter(t => !visibleIdsSet.has(t.id));
+        tasks = [...currentVisibleList, ...hiddenTasks];
+
+        window._currentSortMode = 'manual';
+        if (typeof setSavedSortMode === 'function') setSavedSortMode('manual');
+        const sortSelect = document.getElementById('sortBySelect');
+        if (sortSelect && sortSelect.value !== 'manual') {
+            sortSelect.value = 'manual';
+        }
+
+        tasks.forEach((t, i) => {
+            t.manualOrder = i;
+            t.updatedAt = Date.now();
+        });
+
+        saveLocalCacheOnly();
+        renderAll();
+        await syncLocalToCloud();
+        showToast('Ordem das tarefas atualizada no Diagrama de Gantt!', 'success');
+        return;
+    }
+
+    // 2. REORDENAÇÃO DE SUBTAREFA DENTRO DO GANTT
+    if (targetType === 'subtask') {
+        if (dragInfo.taskId !== targetTaskId) {
+            showToast('Arraste a subtarefa dentro da mesma Tarefa Principal.', 'info');
+            return;
+        }
+        const srcSubIdx = Number(dragInfo.subIdx);
+        const tgtSubIdx = Number(targetSubIdx);
+        if (isNaN(srcSubIdx) || isNaN(tgtSubIdx) || srcSubIdx < 0 || tgtSubIdx < 0 || srcSubIdx === tgtSubIdx) return;
+
+        const task = tasks.find(t => t.id === targetTaskId);
+        if (!task || !Array.isArray(task.subtasks)) return;
+        ensureSubtaskStructure(task.subtasks);
+
+        const targetSubRef = task.subtasks[tgtSubIdx];
+        const [movedSub] = task.subtasks.splice(srcSubIdx, 1);
+        let insertIdx = task.subtasks.indexOf(targetSubRef);
+        if (insertIdx === -1) insertIdx = tgtSubIdx;
+        if (dropPos === 'after') insertIdx += 1;
+
+        task.subtasks.splice(Math.max(0, insertIdx), 0, movedSub);
+        task.subtasks.forEach((s, idx) => { s.originalOrder = idx; });
+        task.subtasksUserCustomOrder = true;
+        task.updatedAt = Date.now();
+
+        selectedCardSubtasksMap.delete(task.id);
+        saveLocalCacheOnly();
+        renderAll();
+        await upsertTaskToCloud(task);
+        showToast('Posição da subtarefa reordenada no Gantt!', 'success');
+    }
+}
+
 // Reordenação de Subtarefas diretamente no Cartão da Tarefa (▲ / ▼)
 async function moveCardSubtaskOrder(taskId, subIdx, delta) {
     if (!hasUserPermission('canEdit') && !hasUserPermission('canManageSubtasks')) {
@@ -4150,7 +4320,7 @@ document.addEventListener('click', function(e) {
 
     if (!activeHighlightedTaskId) return;
     const insideCard = e.target.closest('[data-task-card-id]');
-    const insideModal = e.target.closest('#taskModal, #deletePasswordModal, #roomAuthModal, #adminPanelModal, #userDirectoryModal, #excelImportModal, #jsonImportChoiceModal, #notificationsModal, #archivedTasksModal, #waitingReasonModal, #scheduleExceptionAuthModal, #changePasswordModal');
+    const insideModal = e.target.closest('#taskModal, #deletePasswordModal, #roomAuthModal, #adminPanelModal, #userDirectoryModal, #excelImportModal, #jsonImportChoiceModal, #notificationsModal, #archivedTasksModal, #waitingReasonModal, #scheduleExceptionAuthModal, #changePasswordModal, #itemObservationModal');
     if (!insideCard && !insideModal) {
         activeHighlightedTaskId = null;
         renderAll();
@@ -4417,6 +4587,7 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                                             ${escapeHtml(task.title)}
                                         </span>
                                     </button>
+                                    ${renderObservationIconBadgeHTML(task.id, null, task.observation)}
 
                                     ${isHighlighted ? `
                                         <span class="px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[9px] font-bold shrink-0">★</span>
@@ -4500,7 +4671,7 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                                             const canChangeThisSubAssignee = canReassignAnySubtask || isAssignedToMe || !sub.assignee;
 
                                             return `
-                                                <div class="py-1.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 text-xs">
+                                                <div data-obs-task="${task.id}" data-obs-subtask="${sIdx}" class="py-1.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 text-xs" title="Clique com o botão direito para adicionar ou editar observação">
                                                     <div class="flex items-center gap-2 min-w-0 flex-1">
                                                         <div class="inline-flex items-center rounded bg-slate-200/70 dark:bg-slate-800 border border-slate-300/70 dark:border-slate-700 p-0.5 shrink-0" onclick="event.stopPropagation()" title="Definir ordem da subtarefa">
                                                             <button type="button" onclick="moveCardSubtaskOrder('${task.id}', ${sIdx}, -1)" ${sIdx === 0 ? 'disabled' : ''} class="w-4 h-4 rounded hover:bg-white dark:hover:bg-slate-700 disabled:opacity-30 text-slate-500 hover:text-indigo-600 flex items-center justify-center" title="Subir subtarefa">
@@ -4512,6 +4683,7 @@ function renderSimplifiedListView(filteredTasks, containerEl) {
                                                         </div>
                                                         <input type="checkbox" ${sub.completed ? 'checked' : ''} ${allowSubtasks ? '' : 'disabled'} onchange="toggleSubtaskStatus('${task.id}', ${sIdx})" class="rounded text-indigo-600 w-3.5 h-3.5 cursor-pointer shrink-0">
                                                         <span class="truncate font-medium text-slate-700 dark:text-slate-200 ${sub.completed ? 'line-through opacity-55' : ''}" title="${escapeHtml(sub.text)}">${escapeHtml(sub.text)}</span>
+                                                        ${renderObservationIconBadgeHTML(task.id, sIdx, sub.observation)}
                                                         ${sub.waiting ? `
                                                             <span onclick="event.stopPropagation(); openWaitingReasonModal('${task.id}', ${sIdx})" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border ${getWaitingReasonColors(sub.waitingReason, 'badge')} text-[10px] font-bold cursor-pointer truncate max-w-[220px]" title="Aguardando: ${escapeHtml(sub.waitingReason || '')} (Clique para editar)">
                                                                 <i class="fa-solid fa-circle-pause text-[9px]"></i> ${escapeHtml(sub.waitingReason || 'Aguardando')}
@@ -5761,6 +5933,7 @@ function renderGanttView(filteredTasks, containerEl) {
                         completed: Boolean(sub.completed || task.status === 'done'),
                         waiting: Boolean(sub.waiting) && !sub.completed && task.status !== 'done',
                         waitingReason: sub.waitingReason || '',
+                        observation: sub.observation || '',
                         priority: task.priority || 'media',
                         dueDate: task.dueDate,
                         baseStartMs: taskStartDayMs
@@ -5783,6 +5956,7 @@ function renderGanttView(filteredTasks, containerEl) {
                     itemTitle: task.title,
                     hours: Math.max(0.1, Number(task.estimatedHours) || 8),
                     completed: task.status === 'done',
+                    observation: task.observation || '',
                     priority: task.priority || 'media',
                     dueDate: task.dueDate,
                     baseStartMs: taskStartDayMs
@@ -5816,6 +5990,7 @@ function renderGanttView(filteredTasks, containerEl) {
                 macroGroupsMap.set(item.taskId, {
                     taskId: item.taskId,
                     taskTitle: item.taskTitle,
+                    observation: parentTaskObj?.observation || '',
                     priority: item.priority,
                     dueDate: item.dueDate,
                     deadlineLeadDays: leadDays,
@@ -6516,16 +6691,28 @@ function renderGanttView(filteredTasks, containerEl) {
                 const isVeryNarrowBar = widthPct < 10;
 
                 html += `
-                    <div data-gantt-macro-key="${safeKey}" onclick="toggleGanttMacroTask('${safeKey}', '${macro.taskId}')"
-                         class="absolute h-7 rounded-xl shadow-md ${macroLightBg} ${macroTextColor} flex items-center justify-between gap-1 px-2 text-[11px] font-bold cursor-pointer select-none transition-all hover:shadow-lg z-10 overflow-hidden border ${macro.exceedingSubCount > 0 ? 'border-rose-300 ring-2 ring-rose-500/70' : 'border-white/25'}"
+                    <div data-gantt-macro-key="${safeKey}"
+                         data-obs-task="${macro.taskId}"
+                         data-gantt-drop-zone="macro"
+                         draggable="true"
+                         ondragstart="handleGanttDragStart(event, 'macro', '${macro.taskId}', -1)"
+                         ondragend="handleGanttDragEnd(event)"
+                         ondragover="handleGanttDragOver(event, 'macro', '${macro.taskId}', -1)"
+                         ondragleave="handleGanttDragLeave(event)"
+                         ondrop="handleGanttDrop(event, 'macro', '${macro.taskId}', -1)"
+                         onclick="toggleGanttMacroTask('${safeKey}', '${macro.taskId}')"
+                         class="absolute h-7 rounded-xl shadow-md ${macroLightBg} ${macroTextColor} flex items-center justify-between gap-1 px-2 text-[11px] font-bold cursor-grab active:cursor-grabbing select-none transition-all hover:shadow-lg z-10 overflow-hidden border ${macro.exceedingSubCount > 0 ? 'border-rose-300 ring-2 ring-rose-500/70' : 'border-white/25'}"
                          style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; top: ${topPx}px;"
-                         title="Tarefa Principal: ${escapeHtml(macro.taskTitle)} | Execução: ${macro.progressPct}% (${macro.doneHours}h/${macro.totalHours}h) | Criada em: ${macro.createdFullLabel} | Fim do Prazo (${macro.deadlineLeadDays}d antes): ${macro.effDeadlineFullLabel} | Vencimento Final: ${macro.dueFullLabel}${macro.exceedingSubCount > 0 ? ' | ATENÇÃO: ' + macro.exceedingSubCount + ' subtarefa(s) excedem o fim do prazo da tarefa!' : ''}">
+                         title="Arraste para reordenar a tarefa | Clique para expandir/recolher | Tarefa Principal: ${escapeHtml(macro.taskTitle)} | Execução: ${macro.progressPct}% (${macro.doneHours}h/${macro.totalHours}h) | Criada em: ${macro.createdFullLabel} | Fim do Prazo (${macro.deadlineLeadDays}d antes): ${macro.effDeadlineFullLabel} | Vencimento Final: ${macro.dueFullLabel}${macro.exceedingSubCount > 0 ? ' | ATENÇÃO: ' + macro.exceedingSubCount + ' subtarefa(s) excedem o fim do prazo da tarefa!' : ''}">
                         
                         <!-- Camada de Preenchimento do Percentual de Execução (Cor Mais Escura avançando sobre a Cor Mais Clara) -->
                         <div class="absolute inset-y-0 left-0 ${macroDarkFillBg} transition-all duration-300 pointer-events-none"
                              style="width: ${macro.progressPct}%;"></div>
 
                         <div class="relative z-10 flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+                            <span class="opacity-70 hover:opacity-100 cursor-grab active:cursor-grabbing px-0.5 shrink-0" title="Clique e arraste para mudar a ordem desta Tarefa Principal">
+                                <i class="fa-solid fa-grip-vertical text-[10px]"></i>
+                            </span>
                             ${macro.hasSubtasks ? `
                                 <span class="w-4 h-4 rounded-md bg-black/25 flex items-center justify-center shrink-0">
                                     <i class="fa-solid ${isExpanded ? 'fa-chevron-down' : 'fa-chevron-right'} text-[9px]"></i>
@@ -6536,6 +6723,7 @@ function renderGanttView(filteredTasks, containerEl) {
                             <span class="px-1.5 py-0.2 rounded-md bg-black/35 text-white font-mono text-[9px] font-extrabold shrink-0 border border-white/15" title="Percentual executado da tarefa: ${macro.progressPct}% (${macro.doneHours}h concluídas de ${macro.totalHours}h)">
                                 ${macro.progressPct}%
                             </span>
+                            ${renderObservationIconBadgeHTML(macro.taskId, null, macro.observation, true)}
                         </div>
 
                         ${!isVeryNarrowBar ? `
@@ -6678,13 +6866,29 @@ function renderGanttView(filteredTasks, containerEl) {
                            </button>`
                         : '');
 
+                const ganttSubDragAttrs = item.subIdx >= 0 ? `
+                    data-obs-task="${item.taskId}"
+                    data-obs-subtask="${item.subIdx}"
+                    data-gantt-drop-zone="subtask"
+                    draggable="true"
+                    ondragstart="handleGanttDragStart(event, 'subtask', '${item.taskId}', ${item.subIdx})"
+                    ondragend="handleGanttDragEnd(event)"
+                    ondragover="handleGanttDragOver(event, 'subtask', '${item.taskId}', ${item.subIdx})"
+                    ondragleave="handleGanttDragLeave(event)"
+                    ondrop="handleGanttDrop(event, 'subtask', '${item.taskId}', ${item.subIdx})"
+                ` : `data-obs-task="${item.taskId}"`;
+
                 if (canFitInsideBar) {
                     html += `
-                        <div class="absolute ${barThicknessClass} ${subBarBg} text-white flex items-center justify-between gap-1.5 px-2.5 ${isGroupedDoubleBar ? 'text-[11px] font-bold' : 'text-[10px] font-medium'} transition-all z-10 hover:z-30 overflow-hidden"
+                        <div ${ganttSubDragAttrs}
+                             class="absolute ${barThicknessClass} ${subBarBg} text-white flex items-center justify-between gap-1.5 px-2.5 ${isGroupedDoubleBar ? 'text-[11px] font-bold' : 'text-[10px] font-medium'} cursor-grab active:cursor-grabbing transition-all z-10 hover:z-30 overflow-hidden"
                              style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; top: ${topPx + 2}px;"
-                             title="${escapeHtml(tooltipSub)}">
+                             title="Arraste para mudar a ordem da subtarefa | ${escapeHtml(tooltipSub)}">
                             
-                            <div class="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer overflow-hidden" onclick="${isGanttGroupingModeActive && item.subIdx >= 0 ? toggleGroupSelectCall : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}">
+                            <div class="flex items-center gap-1.5 min-w-0 flex-1 cursor-grab active:cursor-grabbing overflow-hidden" onclick="${isGanttGroupingModeActive && item.subIdx >= 0 ? toggleGroupSelectCall : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}">
+                                <span class="opacity-70 hover:opacity-100 px-0.5 shrink-0" title="Clique e arraste para mudar a ordem desta subtarefa">
+                                    <i class="fa-solid fa-grip-vertical text-[9px]"></i>
+                                </span>
                                 ${item.subIdx >= 0 && (isGanttGroupingModeActive || isSubSelectedForGroup) ? `
                                     <button type="button" onclick="event.stopPropagation(); ${toggleGroupSelectCall}" class="px-1.5 py-0.2 rounded ${isSubSelectedForGroup ? 'bg-emerald-500 text-white ring-2 ring-white' : 'bg-black/40 text-emerald-300 hover:bg-emerald-600 hover:text-white'} text-[9px] font-extrabold flex items-center gap-1 shrink-0 transition" title="Marcar/desmarcar esta subtarefa para agrupar">
                                         <i class="fa-solid ${isSubSelectedForGroup ? 'fa-square-check' : 'fa-object-group'}"></i>
@@ -6698,6 +6902,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                 ${offScreenArrowBadgeHtml}
                                 <input type="checkbox" ${item.completed ? 'checked' : ''} onclick="event.stopPropagation(); ${toggleDoneCall}" class="rounded text-emerald-500 w-3 h-3 cursor-pointer shrink-0" title="Marcar subtarefa como concluída">
                                 <span class="truncate font-semibold ${item.completed ? 'line-through opacity-80' : ''}">${escapeHtml(item.itemTitle)}</span>
+                                ${renderObservationIconBadgeHTML(item.taskId, item.subIdx, item.observation, true)}
                             </div>
 
                             <div class="flex items-center gap-1 shrink-0" onclick="event.stopPropagation()">
@@ -6721,19 +6926,24 @@ function renderGanttView(filteredTasks, containerEl) {
                 } else {
                     html += `
                         <!-- Barra exata de duração da subtarefa na escala de tempo (Ou indicador com Seta quando fora da janela visível e não finalizada!) -->
-                        <div onclick="${offScreenArrowDirection ? `jumpGanttTimelineToDate('${itemStartIso}')` : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}"
-                             class="absolute ${isGroupedDoubleBar ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30' : 'h-6 rounded-md shadow-sm'} ${subBarBg} ${(isOffScreenLeft || isOffScreenRight) ? 'ring-2 ring-rose-500 animate-pulse' : ''} text-white flex items-center justify-center cursor-pointer transition-all z-10 hover:z-30"
+                        <div ${ganttSubDragAttrs}
+                             onclick="${offScreenArrowDirection ? `jumpGanttTimelineToDate('${itemStartIso}')` : `openTaskModalAndFocusSubtask('${item.taskId}', ${item.subIdx})`}"
+                             class="absolute ${isGroupedDoubleBar ? 'h-12 rounded-xl shadow-md ring-1 ring-white/30' : 'h-6 rounded-md shadow-sm'} ${subBarBg} ${(isOffScreenLeft || isOffScreenRight) ? 'ring-2 ring-rose-500 animate-pulse' : ''} text-white flex items-center justify-center cursor-grab active:cursor-grabbing transition-all z-10 hover:z-30"
                              style="left: ${leftPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; min-width: ${(isOffScreenLeft || isOffScreenRight) ? '22px' : (isGroupedDoubleBar ? '14px' : '10px')}; top: ${topPx + 2}px;"
-                             title="${escapeHtml(tooltipSub)}">
+                             title="Arraste para mudar a ordem da subtarefa | ${escapeHtml(tooltipSub)}">
                             ${(isOffScreenLeft || isOffScreenRight)
                                 ? `<i class="fa-solid ${isOffScreenLeft ? 'fa-angles-left' : 'fa-angles-right'} text-[10px] text-white drop-shadow"></i>`
                                 : (widthPct >= 3.2 ? `<span class="font-mono ${isGroupedDoubleBar ? 'text-[10px]' : 'text-[8px]'} font-extrabold leading-none truncate px-0.5">${item.hours}h</span>` : '')}
                         </div>
 
                         <!-- Rótulo externo completo e interativo da Subtarefa (Posicionado como visível e com Seta indicadora quando fora do período!) -->
-                        <div class="absolute ${isGroupedDoubleBar ? 'h-9' : 'h-6'} flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold transition-all z-20 hover:z-40 max-w-[460px] sm:max-w-[620px] ${extPillBorder}"
+                        <div ${ganttSubDragAttrs}
+                             class="absolute ${isGroupedDoubleBar ? 'h-9' : 'h-6'} flex items-center gap-1.5 px-2 rounded-lg border shadow-sm backdrop-blur-sm text-[10px] font-semibold cursor-grab active:cursor-grabbing transition-all z-20 hover:z-40 max-w-[460px] sm:max-w-[620px] ${extPillBorder}"
                              style="${placeLabelOnLeft ? `right: ${(100 - leftPct + 0.6).toFixed(3)}%;` : `left: ${(leftPct + widthPct + 0.6).toFixed(3)}%;`} top: ${topPx + (isGroupedDoubleBar ? 8 : 2)}px;"
-                             title="${escapeHtml(tooltipSub)}">
+                             title="Arraste para mudar a ordem da subtarefa | ${escapeHtml(tooltipSub)}">
+                            <span class="text-slate-400 hover:text-indigo-500 cursor-grab active:cursor-grabbing px-0.5 shrink-0" title="Clique e arraste para reordenar esta subtarefa">
+                                <i class="fa-solid fa-grip-vertical text-[9px]"></i>
+                            </span>
                             ${offScreenArrowDirection === 'left' ? offScreenArrowBadgeHtml : ''}
                             
                             ${item.subIdx >= 0 ? `
@@ -6755,6 +6965,7 @@ function renderGanttView(filteredTasks, containerEl) {
                                   class="truncate cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 ${item.completed ? 'line-through opacity-65' : ''}">
                                 ${escapeHtml(item.itemTitle)}
                             </span>
+                            ${renderObservationIconBadgeHTML(item.taskId, item.subIdx, item.observation, false)}
                             ${item.subIdx >= 0 && isCurrentUserAdmin ? `
                                 <select onchange="event.stopPropagation(); updateCardSubtaskAssignee('${item.taskId}', ${item.subIdx}, this.value)"
                                         onclick="event.stopPropagation()"
@@ -8770,3 +8981,269 @@ adjustCardSubtaskHours = async function(taskId, subIdx, delta) {
     renderAll();
     scheduleDebouncedTaskCloudSync(task, 350);
 };
+
+
+// =========================================================================
+// SISTEMA DE OBSERVAÇÕES (CLIQUE DIREITO + ÍCONE CLICÁVEL EM TODAS AS VISTAS)
+// =========================================================================
+let activeObservationTarget = null; // { mode: 'live' | 'modal', taskId: string, subIdx: number | null }
+
+/**
+ * Gera o ícone clicável que aparece nos itens que possuem observação salva
+ */
+function renderObservationIconBadgeHTML(taskId, subIdx = null, noteText = '', isDarkBar = false) {
+    const cleanNote = String(noteText || '').trim();
+    if (!cleanNote) return '';
+    const subParam = (subIdx !== null && subIdx !== undefined && subIdx >= 0) ? subIdx : 'null';
+    const colorClass = isDarkBar
+        ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 border-amber-200 shadow-sm'
+        : 'bg-amber-500/20 hover:bg-amber-500 text-amber-700 dark:text-amber-300 hover:text-white border-amber-500/40 shadow-sm';
+
+    return `
+        <button type="button"
+                onclick="event.stopPropagation(); openItemObservationModal('${taskId}', ${subParam})"
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-extrabold transition shrink-0 cursor-pointer ${colorClass}"
+                title="📌 Observação: ${escapeHtml(cleanNote)} (Clique para visualizar ou editar)">
+            <i class="fa-solid fa-note-sticky text-[9px]"></i>
+            <span class="hidden sm:inline">Obs.</span>
+        </button>
+    `;
+}
+
+/**
+ * Gera o ícone clicável de observação para as subtarefas dentro do Modal de Edição
+ */
+function renderModalSubtaskObservationIconHTML(subIdx, noteText = '') {
+    const cleanNote = String(noteText || '').trim();
+    if (!cleanNote) return '';
+    return `
+        <button type="button"
+                onclick="event.stopPropagation(); openModalSubtaskObservationDialog(${subIdx})"
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border bg-amber-500/20 hover:bg-amber-500 text-amber-700 dark:text-amber-300 hover:text-white border-amber-500/40 text-[10px] font-extrabold transition shrink-0 cursor-pointer"
+                title="📌 Observação: ${escapeHtml(cleanNote)} (Clique para visualizar ou editar)">
+            <i class="fa-solid fa-note-sticky text-[9px]"></i>
+            <span>Obs.</span>
+        </button>
+    `;
+}
+
+function ensureItemObservationModalExists() {
+    if (document.getElementById('itemObservationModal')) return;
+    const modalHtml = `
+        <div id="itemObservationModal" class="fixed inset-0 z-[95] hidden bg-slate-900/75 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+            <div class="bg-white dark:bg-darkCard w-full max-w-md rounded-2xl border border-slate-200 dark:border-darkBorder shadow-2xl overflow-hidden">
+                <div class="px-5 py-3.5 bg-amber-500/10 border-b border-amber-500/25 flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <div class="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-sm shrink-0">
+                            <i class="fa-solid fa-note-sticky text-sm"></i>
+                        </div>
+                        <div class="min-w-0">
+                            <h3 id="itemObsModalTitle" class="text-sm font-extrabold text-slate-800 dark:text-slate-100 truncate">Observação do Item</h3>
+                            <p id="itemObsModalSubtitle" class="text-[11px] text-slate-500 dark:text-slate-400 truncate">Visualize ou edite a anotação abaixo</p>
+                        </div>
+                    </div>
+                    <button type="button" onclick="closeItemObservationModal()" class="w-7 h-7 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 flex items-center justify-center shrink-0">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <form onsubmit="handleSaveItemObservation(event)" class="p-5 space-y-3.5 text-xs">
+                    <div id="itemObsCurrentPreviewBox" class="hidden p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-slate-800 dark:text-slate-100 space-y-1">
+                        <div class="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                            <span><i class="fa-solid fa-eye mr-1"></i>Observação Registrada</span>
+                            <span id="itemObsUpdatedMeta" class="font-normal opacity-80"></span>
+                        </div>
+                        <p id="itemObsCurrentPreviewText" class="text-xs whitespace-pre-line leading-relaxed font-medium"></p>
+                    </div>
+
+                    <div>
+                        <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-1">
+                            <i class="fa-solid fa-pen-clip text-amber-500 mr-1"></i> Texto da Observação
+                        </label>
+                        <textarea id="itemObsTextarea" rows="4" placeholder="Digite aqui a observação desta tarefa ou subtarefa..." class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 focus:outline-none focus:border-amber-500 text-xs font-medium text-slate-800 dark:text-slate-100 resize-y"></textarea>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                        <button type="button" id="itemObsClearBtn" onclick="handleClearItemObservation()" class="hidden px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-600 text-rose-600 dark:text-rose-400 hover:text-white border border-rose-500/25 text-xs font-bold transition flex items-center gap-1.5">
+                            <i class="fa-solid fa-trash-can text-[10px]"></i> Excluir Observação
+                        </button>
+                        <div class="flex items-center gap-2 ml-auto">
+                            <button type="button" onclick="closeItemObservationModal()" class="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-xs font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                                Fechar
+                            </button>
+                            <button type="submit" class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-extrabold shadow-md shadow-amber-500/20 transition flex items-center gap-1.5">
+                                <i class="fa-solid fa-floppy-disk"></i> Salvar Observação
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function openItemObservationModal(taskId, subIdx = null) {
+    ensureItemObservationModalExists();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    const isSub = subIdx !== null && subIdx !== undefined && subIdx >= 0 && task.subtasks && task.subtasks[subIdx];
+    activeObservationTarget = {
+        mode: 'live',
+        taskId,
+        subIdx: isSub ? Number(subIdx) : null
+    };
+
+    const targetObj = isSub ? task.subtasks[subIdx] : task;
+    const currentNote = String(targetObj.observation || '').trim();
+    const updatedMeta = targetObj.observationUpdatedBy
+        ? `Por ${targetObj.observationUpdatedBy}`
+        : '';
+
+    document.getElementById('itemObsModalTitle').textContent = isSub
+        ? `Observação da Subtarefa #${Number(subIdx) + 1}`
+        : `Observação da Tarefa Principal`;
+    document.getElementById('itemObsModalSubtitle').textContent = isSub
+        ? (targetObj.text || task.title)
+        : task.title;
+
+    const previewBox = document.getElementById('itemObsCurrentPreviewBox');
+    const previewTxt = document.getElementById('itemObsCurrentPreviewText');
+    const metaEl = document.getElementById('itemObsUpdatedMeta');
+    const clearBtn = document.getElementById('itemObsClearBtn');
+    const textarea = document.getElementById('itemObsTextarea');
+
+    if (currentNote) {
+        previewBox.classList.remove('hidden');
+        previewTxt.textContent = currentNote;
+        metaEl.textContent = updatedMeta;
+        clearBtn.classList.remove('hidden');
+    } else {
+        previewBox.classList.add('hidden');
+        previewTxt.textContent = '';
+        metaEl.textContent = '';
+        clearBtn.classList.add('hidden');
+    }
+
+    textarea.value = currentNote;
+    document.getElementById('itemObservationModal').classList.remove('hidden');
+    setTimeout(() => textarea.focus(), 50);
+}
+
+function openModalSubtaskObservationDialog(subIdx) {
+    ensureItemObservationModalExists();
+    ensureSubtaskStructure(modalSubtasks);
+    const sub = modalSubtasks[subIdx];
+    if (!sub) return;
+
+    activeObservationTarget = {
+        mode: 'modal',
+        taskId: null,
+        subIdx: Number(subIdx)
+    };
+
+    const currentNote = String(sub.observation || '').trim();
+    document.getElementById('itemObsModalTitle').textContent = `Observação da Subtarefa #${Number(subIdx) + 1}`;
+    document.getElementById('itemObsModalSubtitle').textContent = sub.text || '';
+
+    const previewBox = document.getElementById('itemObsCurrentPreviewBox');
+    const previewTxt = document.getElementById('itemObsCurrentPreviewText');
+    const metaEl = document.getElementById('itemObsUpdatedMeta');
+    const clearBtn = document.getElementById('itemObsClearBtn');
+    const textarea = document.getElementById('itemObsTextarea');
+
+    if (currentNote) {
+        previewBox.classList.remove('hidden');
+        previewTxt.textContent = currentNote;
+        if (metaEl) metaEl.textContent = sub.observationUpdatedBy ? `Por ${sub.observationUpdatedBy}` : '';
+        clearBtn.classList.remove('hidden');
+    } else {
+        previewBox.classList.add('hidden');
+        previewTxt.textContent = '';
+        if (metaEl) metaEl.textContent = '';
+        clearBtn.classList.add('hidden');
+    }
+
+    textarea.value = currentNote;
+    document.getElementById('itemObservationModal').classList.remove('hidden');
+    setTimeout(() => textarea.focus(), 50);
+}
+
+function closeItemObservationModal() {
+    activeObservationTarget = null;
+    document.getElementById('itemObservationModal')?.classList.add('hidden');
+}
+
+async function handleSaveItemObservation(event) {
+    if (event && event.preventDefault) event.preventDefault();
+    if (!activeObservationTarget) return;
+
+    const noteVal = (document.getElementById('itemObsTextarea')?.value || '').trim();
+    const { mode, taskId, subIdx } = activeObservationTarget;
+    closeItemObservationModal();
+
+    if (mode === 'modal') {
+        if (modalSubtasks[subIdx]) {
+            modalSubtasks[subIdx].observation = noteVal;
+            modalSubtasks[subIdx].observationUpdatedAt = Date.now();
+            modalSubtasks[subIdx].observationUpdatedBy = currentAuthor || currentUserLogin || 'Usuário';
+            renderModalSubtasks();
+            showToast(noteVal ? 'Observação aplicada na subtarefa!' : 'Observação removida.', 'success');
+        }
+        return;
+    }
+
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    if (subIdx !== null && subIdx !== undefined && task.subtasks && task.subtasks[subIdx]) {
+        task.subtasks[subIdx].observation = noteVal;
+        task.subtasks[subIdx].observationUpdatedAt = Date.now();
+        task.subtasks[subIdx].observationUpdatedBy = currentAuthor || currentUserLogin || 'Usuário';
+    } else {
+        task.observation = noteVal;
+        task.observationUpdatedAt = Date.now();
+        task.observationUpdatedBy = currentAuthor || currentUserLogin || 'Usuário';
+    }
+
+    task.updatedAt = Date.now();
+    saveLocalCacheOnly();
+    renderAll();
+    await upsertTaskToCloud(task);
+    showToast(noteVal ? 'Observação salva com sucesso!' : 'Observação removida.', 'success');
+}
+
+async function handleClearItemObservation() {
+    const textarea = document.getElementById('itemObsTextarea');
+    if (textarea) textarea.value = '';
+    await handleSaveItemObservation({ preventDefault: () => {} });
+}
+
+// Intercepta o clique com o botão direito (contextmenu) em qualquer Tarefa ou Subtarefa (Kanban, Lista, Gantt e Modal)
+document.addEventListener('contextmenu', function(e) {
+    const subEl = e.target.closest('[data-obs-subtask]');
+    if (subEl) {
+        e.preventDefault();
+        e.stopPropagation();
+        const mode = subEl.getAttribute('data-obs-mode') || 'live';
+        const sIdx = parseInt(subEl.getAttribute('data-obs-subtask'), 10);
+        if (mode === 'modal') {
+            openModalSubtaskObservationDialog(sIdx);
+        } else {
+            const tId = subEl.getAttribute('data-obs-task');
+            openItemObservationModal(tId, sIdx);
+        }
+        return;
+    }
+
+    const taskEl = e.target.closest('[data-obs-task], [data-task-card-id]');
+    if (taskEl) {
+        e.preventDefault();
+        e.stopPropagation();
+        const tId = taskEl.getAttribute('data-obs-task') || taskEl.getAttribute('data-task-card-id');
+        if (tId) {
+            openItemObservationModal(tId, null);
+        }
+    }
+});
